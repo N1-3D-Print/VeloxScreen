@@ -1,0 +1,20 @@
+__pycache__/
+*.py[cod]
+*.log
+*.bak
+*.backup
+*.backup.*
+*.tmp
+*.swp
+.DS_Store
+.venv/
+venv/
+build/
+dist/
+*.egg-info/
+.env
+*.local
+# User-specific printer configuration and runtime files
+veloxscreen.conf
+backups/
+.Xauthority

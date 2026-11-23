@@ -1,0 +1,65 @@
+name: Bug report
+description: Help improve VeloxScreen by reporting a reproducible problem.
+title: "[Bug]: "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for helping improve VeloxScreen! This is an **early alpha**; bugs are expected. Please remove passwords, API tokens, private addresses and other sensitive details from logs/screenshots.
+  - type: input
+    id: version
+    attributes:
+      label: VeloxScreen version
+      placeholder: e.g. v0.3.5-alpha
+    validations:
+      required: true
+  - type: input
+    id: hardware
+    attributes:
+      label: OS, Raspberry Pi and display
+      placeholder: e.g. Raspberry Pi 4, Debian 12 ARM64, Waveshare 5-inch DSI 800x480
+    validations:
+      required: true
+  - type: input
+    id: stack
+    attributes:
+      label: Klipper / Moonraker versions (if known)
+  - type: textarea
+    id: steps
+    attributes:
+      label: How to reproduce
+      description: Give numbered steps, starting from the affected screen or setting.
+      placeholder: |
+        1. Open Settings
+        2. Tap ...
+        3. ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected result
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual result
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Sanitized logs or screenshots
+      description: 'Useful command: journalctl -u veloxscreen -b -n 100 --no-pager'
+      render: shell
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checklist
+      options:
+        - label: I checked for existing issues describing the same problem.
+          required: true
+        - label: I removed secrets and personally identifying information from attachments.
+          required: true
