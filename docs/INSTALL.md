@@ -2,6 +2,24 @@
 
 **Read this first:** VeloxScreen is an early alpha. Installation may affect your local display session. Keep SSH access available for recovery. Do not change X11/tty1 settings while printing.
 
+## Quick install (recommended)
+
+For a standard Debian 12 Raspberry Pi touchscreen setup, run this **entire block** over SSH (while idle):
+
+```bash
+cd ~
+sudo apt-get update && sudo apt-get install -y git
+git clone https://github.com/N1-3D-Print/VeloxScreen.git
+cd VeloxScreen
+bash scripts/quick-install.sh
+```
+
+The guided script installs the app, prepares the X11 service, asks before disabling KlipperScreen and (if needed) asks whether to enable tty1 autologin. **It never uninstalls KlipperScreen, overwrites unknown X11 sessions or reboots automatically.** When finished and the printer is idle, you can run `sudo reboot`.
+
+If the repository is already cloned, start with `cd ~/VeloxScreen && bash scripts/quick-install.sh`. If VeloxScreen is already active, the script updates only the app and leaves kiosk setup unchanged.
+
+The steps below are for manual/custom setups.
+
 ## 1. Prerequisites
 
 - Raspberry Pi 4 or compatible ARM64 system running Debian 12 Bookworm.

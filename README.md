@@ -28,23 +28,37 @@ Built for compact Raspberry Pi displays (800 × 480). No browser required.
 
 [View all screenshots](screenshots/README.md)
 
-## Installation
+## Installation (copy & paste)
 
-**Requirements:** Raspberry Pi 4 / ARM64, Debian 12, Klipper + Moonraker, an X11 touchscreen session.
+**Requirements:** Raspberry Pi 4 / ARM64, Debian 12, Klipper + Moonraker and a working touchscreen. SSH access recommended. **Do not install while printing.**
 
-Download/extract the repository, then run from its folder:
+**First installation** — paste this block into your Raspberry Pi SSH terminal:
 
 ```bash
-bash scripts/install.sh
+cd ~
+sudo apt-get update && sudo apt-get install -y git
+git clone https://github.com/N1-3D-Print/VeloxScreen.git
+cd VeloxScreen
+bash scripts/quick-install.sh
 ```
 
-For an existing installation with dependencies already installed:
+Answer the prompts: the installer installs dependencies, sets up X11/systemd, **asks before disabling KlipperScreen**, and offers tty1 autologin (physical-access security tradeoff). KlipperScreen is **not deleted**. No automatic reboot.
+
+Once complete and **no print is running**:
 
 ```bash
+sudo reboot
+```
+
+**Update an already working installation** (does not redo X11/autologin):
+
+```bash
+cd ~/VeloxScreen
+git pull
 bash scripts/install.sh --skip-deps
 ```
 
-**First-time display setup:** see [Installation guide](docs/INSTALL.md). If VeloxScreen already runs via Mainsail, **do not repeat kiosk setup**.
+For custom kiosk/console setups see [Advanced installation](docs/INSTALL.md).
 
 ## Switch between screens (no uninstall)
 

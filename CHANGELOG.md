@@ -9,3 +9,8 @@
 - No claim of production readiness. Some printer-specific features require manual adjustment; cross-device testing is incomplete.
 
 This package was assembled from the previous v0.3.5 touchscreen alpha. It is **not** a rewrite of the runtime application and does **not** imply every feature has been tested on real hardware.
+
+### Installation improvements
+- New guided one-command setup: `bash scripts/quick-install.sh`.
+- Fix permission-denied error in kiosk setup by invoking migration with `bash`.
+- Guided optional tty1 autologin; no automatic reboot or KlipperScreen removal.
