@@ -3,10 +3,10 @@
 ![VeloxScreen](assets/veloxscreen_splash.png)
 
 **A native touchscreen interface for Klipper & Moonraker.**  
-Built for compact Raspberry Pi displays (800 × 480). No browser required.
+Responsive layout for small Raspberry Pi touchscreens (experimental 320 × 240 to 1024 × 600). No browser required.
 
 > [!WARNING]
-> **Early Alpha (v0.3.5)** — bugs and incomplete features are expected. Test printer controls carefully. Found an issue? **Please open a GitHub Issue!** Feedback and suggestions are welcome.
+> **Early Alpha (v0.3.6)** — bugs and incomplete features are expected. Test printer controls carefully. Found an issue? **Please open a GitHub Issue!** Feedback and suggestions are welcome.
 
 ## Features
 
@@ -15,6 +15,13 @@ Built for compact Raspberry Pi displays (800 × 480). No browser required.
 - **Customization:** unlimited temperature presets, macros, themes and `veloxscreen.conf`.
 - **Extras:** Bed Mesh, G-Code console, LED Effects, notifications and animated startup.
 - **Languages:** English (default) and German.
+
+## Display scaling
+
+- Detects Qt screen resolution automatically on launch.
+- Compact top navigation and stacked controls on narrow displays.
+- To override font/UI sizing, set `[display]` → `ui_scale = 1.15` in `~/printer_data/config/veloxscreen.conf` and restart the UI.
+- **Early alpha:** 2.8-inch / 320×240 displays have tight controls; keypad and complex edit dialogs may need further work. A screen's physical size cannot be detected reliably from resolution alone.
 
 ## Screenshots
 

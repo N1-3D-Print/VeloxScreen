@@ -75,3 +75,10 @@ speed_min = 10
 speed_max = 300
 flow_min = 50
 flow_max = 150
+
+[display]
+# Auto adjusts columns, navigation and font sizes to the detected screen resolution.
+# Examples: 320x240, 480x320, 800x480, 1024x600.
+# Seven-inch and five-inch screens with the same pixel resolution look identical to Qt.
+# Optional manual magnification: 0.7 to 1.5 (e.g. 1.15 for a 7-inch screen).
+ui_scale = auto

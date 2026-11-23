@@ -644,6 +644,62 @@ def fan_slider_style(theme):
 
 STYLE = themed_style(THEME)
 
+
+def display_profile(screen_width, screen_height, configured='auto'):
+    """Use Qt logical screen size (not physical inch size) for layout.
+
+    7-inch panels can still report 800x480; use an optional UI scale override.
+    """
+    width, height = max(1, int(screen_width)), max(1, int(screen_height))
+    compact = width < 700 or height < 400
+    tiny = width < 460 or height < 300
+    if width >= 1024 and height >= 600:
+        automatic_scale = 1.12
+    elif tiny:
+        automatic_scale = 0.85
+    elif compact:
+        automatic_scale = 0.92
+    else:
+        automatic_scale = 1.0
+    try:
+        scale = automatic_scale if str(configured).strip().lower() in ('auto', '') else float(configured)
+    except (TypeError, ValueError, OverflowError):
+        scale = automatic_scale
+    scale = max(0.7, min(1.5, scale))
+    return compact, tiny, scale
+
+
+def scaled_style(style, factor):
+    """Adjust stylesheet pixel font sizes and padding without changing geometry."""
+    if abs(factor - 1.0) < 0.005:
+        return style
+    def replace(match):
+        value = float(match.group(2))
+        return match.group(1) + str(max(9, round(value * factor))) + 'px'
+    return re.sub(r'(font-size:\s*)([0-9]+(?:\.[0-9]+)?)px', replace, style)
+
+
+def fit_dialog(dialog, desired_width, desired_height):
+    """Keep popups within the actual usable display; never force 740px offscreen."""
+    screen = QApplication.primaryScreen()
+    rect = screen.availableGeometry() if screen is not None else None
+    width = max(240, rect.width() - 12) if rect is not None else desired_width
+    height = max(180, rect.height() - 12) if rect is not None else desired_height
+    dialog.resize(min(desired_width, width), min(desired_height, height))
+    dialog.setMaximumSize(width, height)
+
+
+def touch_dialog_style(source):
+    screen = QApplication.primaryScreen()
+    if screen is None:
+        return source
+    _, tiny, scale = display_profile(screen.geometry().width(), screen.geometry().height(),
+                                     conf('display', 'ui_scale', 'auto'))
+    if tiny:
+        source += '\nQPushButton { min-height: 22px; padding: 1px 2px; } QLineEdit { min-height: 26px; }'
+    return scaled_style(source, scale)
+
+
 def label(text, name=None):
     l = QLabel(tr(text))
     if name:
@@ -715,9 +771,9 @@ class TouchNumberDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle(tr(title))
         self.setModal(True)
-        self.setStyleSheet(STYLE + "QPushButton { min-height: 45px; font-size: 19px; } QLineEdit { font-size: 24px; font-weight: bold; min-height: 42px; }")
+        self.setStyleSheet(touch_dialog_style(STYLE + "QPushButton { min-height: 45px; font-size: 19px; } QLineEdit { font-size: 24px; font-weight: bold; min-height: 42px; }"))
         self.low, self.high, self.decimals = minimum, maximum, decimals
-        self.setFixedSize(380, 398)
+        fit_dialog(self, 380, 398)
         lay = QVBoxLayout(self)
         lay.setContentsMargins(13, 10, 13, 10)
         lay.setSpacing(5)
@@ -923,8 +979,8 @@ class TouchTextDialog(QDialog):
     def __init__(self, parent, value):
         super().__init__(parent)
         self.setWindowTitle(tr('Preset name'))
-        self.setStyleSheet(STYLE + 'QPushButton { min-height: 36px; font-size: 15px; padding: 3px; }')
-        self.setFixedSize(700, 360)
+        self.setStyleSheet(touch_dialog_style(STYLE + 'QPushButton { min-height: 36px; font-size: 15px; padding: 3px; }'))
+        fit_dialog(self, 700, 360)
         layout = QVBoxLayout(self)
         self.name_edit = QLineEdit(value)
         self.name_edit.setReadOnly(True)
@@ -968,9 +1024,9 @@ class TouchCommandDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle(tr('G-Code keyboard'))
         self.setModal(True)
-        self.setFixedSize(700, 390)
-        self.setStyleSheet(STYLE + 'QPushButton { min-height: 36px; font-size: 16px; padding: 1px; } '
-                           'QLineEdit { min-height: 42px; font-size: 19px; }')
+        fit_dialog(self, 700, 390)
+        self.setStyleSheet(touch_dialog_style(STYLE + 'QPushButton { min-height: 36px; font-size: 16px; padding: 1px; } '
+                           'QLineEdit { min-height: 42px; font-size: 19px; }'))
         self.upper = True
         lay = QVBoxLayout(self)
         lay.setContentsMargins(10, 7, 10, 7)
@@ -1103,8 +1159,8 @@ class TemperaturePresetEditor(QDialog):
     def __init__(self, parent):
         super().__init__(parent)
         self.setWindowTitle(tr('Edit temperature presets'))
-        self.setStyleSheet(STYLE)
-        self.setFixedSize(740, 430)
+        self.setStyleSheet(touch_dialog_style(STYLE))
+        fit_dialog(self, 740, 430)
         self._names = []
         self._original = None
         main = QHBoxLayout(self)
@@ -1237,7 +1293,7 @@ class ThemeColorDialog(QDialog):
         super().__init__(owner)
         self.owner = owner
         self.setWindowTitle(tr('Theme colors'))
-        self.setFixedSize(740, 428)
+        fit_dialog(self, 740, 428)
         self.setModal(True)
         self.setStyleSheet(STYLE)
         self.working = dict(owner.theme)
@@ -1511,8 +1567,14 @@ class Screen(QWidget):
         super().__init__()
         self.setWindowTitle('VeloxScreen')
         self.theme = dict(THEME)
-        self.setStyleSheet(STYLE)
-        self.resize(800, 480)
+        screen = QApplication.primaryScreen()
+        available = screen.availableGeometry() if screen is not None else None
+        screen_width = available.width() if available is not None else 800
+        screen_height = available.height() if available is not None else 480
+        self.compact, self.tiny, self.ui_scale = display_profile(
+            screen_width, screen_height, conf('display', 'ui_scale', 'auto'))
+        self.setStyleSheet(scaled_style(STYLE, self.ui_scale))
+        self.resize(screen_width, screen_height)
         self.s = {}
         self.all_objects = []
         self.network = Network(conf('connection', 'moonraker_url', 'http://127.0.0.1:7125'))
@@ -1573,7 +1635,7 @@ class Screen(QWidget):
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(0)
         sidebar = QFrame()
-        sidebar.setFixedWidth(162)
+        sidebar.setFixedWidth(142 if self.compact else 162)
         sidebar.setObjectName('veloxSidebar')
         sl = QVBoxLayout(sidebar)
         sl.setContentsMargins(5, 7, 5, 7)
@@ -1592,6 +1654,14 @@ class Screen(QWidget):
                     ('LED Effects', self.make_led_effects), ('Dateien', self.make_files), ('Kalibrierung', self.make_calib),
                     ('Konsole', self.make_console), ('Makros', self.make_macros),
                     ('Einstellungen', self.make_settings)]
+        self.compact_nav = None
+        if self.compact:
+            self.compact_nav = QComboBox()
+            self.compact_nav.setMinimumHeight(30 if self.tiny else 38)
+            self.compact_nav.addItems([tr(name) for name, _ in sections])
+            self.compact_nav.currentIndexChanged.connect(
+                lambda index: self.navigate(sections[index][0]) if index >= 0 else None)
+            # Insert into the content column after its layout exists.
         for name, builder in sections:
             nav = QPushButton(tr(name))
             nav.setObjectName('nav')
@@ -1602,12 +1672,17 @@ class Screen(QWidget):
             self.pages[name] = self._page(name, builder)
             self.stack.addWidget(self.pages[name])
         sl.addStretch()
-        sl.addWidget(label('v0.3.5', 'caption'))
-        outer.addWidget(sidebar)
+        sl.addWidget(label('v0.3.6 alpha', 'caption'))
+        if self.compact:
+            sidebar.hide()
+        else:
+            outer.addWidget(sidebar)
         content_side = QWidget()
         content_layout = QVBoxLayout(content_side)
         content_layout.setContentsMargins(0, 0, 0, 0)
         content_layout.setSpacing(0)
+        if self.compact_nav is not None:
+            content_layout.addWidget(self.compact_nav)
         # No service controls in the header: settings owns the local restart action.
         # This also gives the 800x480 screens more usable height.
         content_layout.addWidget(self.stack, 1)
@@ -1628,6 +1703,11 @@ class Screen(QWidget):
 
     def navigate(self, name):
         self.stack.setCurrentWidget(self.pages[name])
+        if self.compact_nav is not None:
+            names = list(self.pages)
+            self.compact_nav.blockSignals(True)
+            self.compact_nav.setCurrentIndex(names.index(name))
+            self.compact_nav.blockSignals(False)
         for n, b in self.nav_buttons.items():
             b.setChecked(n == name)
         if name == 'Dateien':
@@ -1706,7 +1786,7 @@ class Screen(QWidget):
 
     def add_override_controls(self, parent_layout):
         """Add shared M220/M221 controls; both pages show the same live values."""
-        columns = QHBoxLayout()
+        columns = QVBoxLayout() if self.compact else QHBoxLayout()
         columns.setSpacing(6)
         for which, command, steps in (
             ('speed', 'M220', (-25, -5, 0, 5, 25)),
@@ -1827,7 +1907,7 @@ class Screen(QWidget):
             for i, (name, content) in enumerate(entries):
                 b = button(name, partial(self.apply_temp_preset, name, content))
                 b.setMinimumHeight(39)
-                grid.addWidget(b, i // columns, i % columns)
+                grid.addWidget(b, i // (1 if self.tiny else columns), i % (1 if self.tiny else columns))
             if not entries:
                 grid.addWidget(label('No temperature presets. Tap Edit presets.', 'caption'), 0, 0)
 
@@ -1868,7 +1948,8 @@ class Screen(QWidget):
             self.s[key] = val
             c.addWidget(val)
             c.addWidget(label(unit, 'caption'))
-            grid.addWidget(f, 0, i)
+            grid.addWidget(f, i // (1 if self.tiny else 2 if self.compact else 3),
+                           i % (1 if self.tiny else 2 if self.compact else 3))
         l.addLayout(grid)
         # Live values stay large. The active motion limits are independently editable.
         self.motion_limit_buttons = {}
@@ -1881,7 +1962,7 @@ class Screen(QWidget):
             motion_bar.addWidget(b)
         motor_button = button('Motors Off', self.motors_off)
         motor_button.setMinimumHeight(40)
-        motor_button.setFixedWidth(96)
+        motor_button.setFixedWidth(70 if self.compact else 96)
         motor_button.setToolTip(tr('Disables all stepper motors. Rehome axes before moving again.'))
         motor_button.setEnabled(False)
         self.motor_off_buttons.append(motor_button)
@@ -2109,7 +2190,7 @@ class Screen(QWidget):
         self.theme = dict(theme)
         THEME = dict(theme)
         STYLE = themed_style(THEME)
-        self.setStyleSheet(STYLE)
+        self.setStyleSheet(scaled_style(STYLE, self.ui_scale))
         # Fan sliders use a custom stylesheet, so refresh it explicitly.
         for _name, (_text, slider) in getattr(self, 'fan_widgets', {}).items():
             if slider is not None:
@@ -2377,7 +2458,7 @@ class Screen(QWidget):
             if self.macro_is_visible(name):
                 self.macro_buttons.addWidget(
                     button(name, partial(self.confirm_script, self.macro_commands[name], name)),
-                    shown // 2, shown % 2)
+                    shown // (1 if self.tiny else 2), shown % (1 if self.tiny else 2))
                 shown += 1
         if hasattr(self, 'macro_status'):
             self.macro_status.setText(tr(
@@ -2581,7 +2662,7 @@ class Screen(QWidget):
                 tile_lay.addWidget(value)
                 tile_lay.addWidget(subtitle)
                 self.dash_temp_widgets[name] = (value, subtitle)
-                self.dash_temp_grid.addWidget(tile, i // 2, i % 2)
+                self.dash_temp_grid.addWidget(tile, i // (1 if self.tiny else 2), i % (1 if self.tiny else 2))
         self.dash_temp_empty.setVisible(not bool(chosen))
         if not chosen:
             self.dash_temp_empty.setText(tr('Keine passenden Heizungen oder Kammersensoren gefunden.'))
@@ -2762,7 +2843,7 @@ class Screen(QWidget):
                 else:
                     target.setText(tr('Nur Anzeige'))
                 self.temp_widgets[name]=(temperature,target)
-                self.temperature_grid.addWidget(f,i//2,i%2)
+                self.temperature_grid.addWidget(f,i//(1 if self.tiny else 2),i%(1 if self.tiny else 2))
             self.temp_info.setVisible(not (heaters or sensors))
             if not (heaters or sensors): self.temp_info.setText(tr('Keine Temperaturobjekte erkannt.'))
         for name,(reading,target) in self.temp_widgets.items():
@@ -2986,7 +3067,12 @@ class Screen(QWidget):
 
 if __name__ == '__main__':
     app = QApplication(sys.argv)
-    app.setFont(QFont('DejaVu Sans', int(conf('appearance', 'font_size', '12'))))
+    screen = app.primaryScreen()
+    geometry = screen.availableGeometry() if screen is not None else None
+    _, _, scale = display_profile(geometry.width() if geometry is not None else 800,
+                                  geometry.height() if geometry is not None else 480,
+                                  conf('display', 'ui_scale', 'auto'))
+    app.setFont(QFont('DejaVu Sans', max(9, round(int(conf('appearance', 'font_size', '12')) * scale))))
     win = Screen()
     if '--windowed' in sys.argv:
         win.show()

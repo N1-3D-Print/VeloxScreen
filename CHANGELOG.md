@@ -1,3 +1,12 @@
+## v0.3.6-alpha — Responsive touchscreen layouts
+
+- Detect smaller Qt display resolutions and switch sidebar navigation to a top dropdown.
+- Stack speed/flow override panels on compact screens and adapt dashboard cards/presets.
+- Reduce fixed dialog-window sizes to available screen bounds.
+- Add optional `[display] ui_scale = auto` (or 0.7–1.5 for manual scaling).
+- No printer commands or Klipper logic changed.
+- Experimental: 320×240 complex dialogs and touch targets require device testing.
+
 # Changelog
 
 ## v0.3.5-alpha — first public GitHub package
