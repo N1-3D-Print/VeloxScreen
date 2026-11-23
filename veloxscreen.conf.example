@@ -1,0 +1,77 @@
+# VeloxScreen example configuration
+# Copy to: ~/printer_data/config/veloxscreen.conf
+# Values are examples. Check your printer's supported limits before using commands.
+
+[connection]
+moonraker_url = http://127.0.0.1:7125
+refresh_ms = 1000
+
+[appearance]
+title = VeloxScreen
+font_size = 15
+language = en
+accent_color = #2866bd
+overlay_color = #171f2d
+background_color = #0c1119
+sidebar_color = #111925
+button_color = #26364e
+
+[extrusion]
+lengths = 1, 5, 10, 50, 100
+speeds = 2, 5, 10, 20, 50
+jog_steps = 1, 5, 15, 25, 50
+
+[tools]
+# Empty means automatic extrusion-object discovery.
+# Optional tool-to-extruder mappings (adjust to your machine):
+# T0 = extruder
+# T1 = extruder1
+
+[temperature_presets]
+PLA = nozzle:210, bed:60
+PETG = nozzle:240, bed:80
+ABS = nozzle:250, bed:100
+# Optional single-heater presets:
+# Bed 60 = bed:60
+# Chamber 45 = chamber:45
+
+[macros]
+# Optional custom macro shortcuts. Klipper macros are also discovered automatically.
+# Nozzle brush = BRUSH_NOZZLE
+
+[layout]
+# Fan objects are automatically detected. Optional explicit ordering:
+# fan_order = fan, fan_generic aux
+# chamber_heater = heater_generic chamber_heater
+
+[behavior]
+# Turning this off sends commands without an extra confirmation dialog.
+confirm_commands = true
+
+[macro_visibility]
+# 'all': show all except names listed under hidden.
+# 'selected': show only names listed under visible, including newly added macros.
+mode = all
+visible =
+hidden =
+
+[led_effects]
+fade_seconds = 0.5
+
+[startup]
+show_splash = true
+animate_speedlines = true
+duration_seconds = 3
+# Optional custom splash image, absolute or relative to printer_data/config.
+image =
+
+[notifications]
+enabled = true
+duration_seconds = 4
+
+[overrides]
+# M220 speed and M221 flow limits in percent; UI step sizes are fixed.
+speed_min = 10
+speed_max = 300
+flow_min = 50
+flow_max = 150
