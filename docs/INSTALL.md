@@ -124,3 +124,14 @@ sudo systemctl disable --now veloxscreen.service
 ```
 
 To restore KlipperScreen, see [SWITCHING.md](SWITCHING.md). The installer does not automatically remove system packages or touch printer firmware. Backups are stored under `~/veloxscreen_native/backups/`.
+
+## Optional automatic updates in Mainsail
+
+After the kiosk is installed and running, you can enable the Moonraker Update Manager:
+
+```bash
+cd ~/VeloxScreen
+bash scripts/setup-moonraker-updates.sh
+```
+
+See [MOONRAKER_UPDATES.md](MOONRAKER_UPDATES.md) for the required lower-case service naming, runtime sync, and restart instructions.

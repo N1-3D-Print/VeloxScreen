@@ -28,7 +28,7 @@ if [[ ! -e /dev/tty0 ]]; then
   echo 'WARNING: /dev/tty0 is missing. Check that your Pi exposes a Linux virtual console.'
 fi
 
-printf '\nVeloxScreen v0.3.5 alpha - guided installer\n'
+printf '\nVeloxScreen v0.3.7 alpha - guided installer\n'
 printf 'User: %s | Repo: %s\n' "$(id -un)" "$ROOT"
 echo 'Requires Debian 12/compatible system, a connected touchscreen, Klipper + Moonraker.'
 echo 'This will install the app, set up its X11 kiosk and optionally configure tty1 login.'
@@ -43,6 +43,7 @@ if systemctl is-active --quiet veloxscreen.service; then
   echo 'An active VeloxScreen service was found. Updating only; kiosk settings unchanged.'
   bash "$ROOT/scripts/install.sh"
   echo 'Update complete. Existing autologin and display settings were preserved.'
+  echo 'Optional Moonraker Update Manager: bash scripts/setup-moonraker-updates.sh'
   exit 0
 fi
 
@@ -101,6 +102,7 @@ echo '====== VeloxScreen setup complete ======'
 echo 'KlipperScreen was NOT uninstalled.'
 echo 'Config: ~/printer_data/config/veloxscreen.conf'
 echo 'Service: veloxscreen.service'
+echo 'Optional Moonraker updates: bash scripts/setup-moonraker-updates.sh'
 echo 'Check before reboot: systemctl cat getty@tty1.service | tail -15'
 echo 'Reboot only when no print is running: sudo reboot'
 echo 'If the display stays blank: journalctl -u veloxscreen -n 60 --no-pager'

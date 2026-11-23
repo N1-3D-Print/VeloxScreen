@@ -13,3 +13,7 @@
 - [ ] Release with an **alpha/pre-release** tag, not as stable production software.
 
 Software syntax checks alone do **not** substitute for real hardware testing.
+
+- [ ] Test 2.8-inch / 320x240 touch layouts on real hardware (experimental).
+- [ ] Test Moonraker-managed update and managed_service restart on an idle printer.
+- [ ] Confirm `veloxscreen.conf` and custom logo remain untouched after updates.

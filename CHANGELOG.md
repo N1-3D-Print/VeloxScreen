@@ -1,3 +1,11 @@
+## v0.3.7-alpha (2026-11-23)
+
+- Bundled the responsive UI from v0.3.6 (experimental 320×240 through larger displays).
+- Added optional Moonraker Update Manager setup with correct lower-case service naming.
+- Added safe runtime sync on managed service starts, preserving custom config and logo.
+- Fixed the kiosk installer invoking `migrate-autostart.sh` without execute permission.
+- Updated English installation and troubleshooting documentation.
+
 ## v0.3.6-alpha — Responsive touchscreen layouts
 
 - Detect smaller Qt display resolutions and switch sidebar navigation to a top dropdown.

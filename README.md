@@ -6,7 +6,7 @@
 Responsive layout for small Raspberry Pi touchscreens (experimental 320 × 240 to 1024 × 600). No browser required.
 
 > [!WARNING]
-> **Early Alpha (v0.3.6)** — bugs and incomplete features are expected. Test printer controls carefully. Found an issue? **Please open a GitHub Issue!** Feedback and suggestions are welcome.
+> **Early Alpha (v0.3.7)** — bugs and incomplete features are expected. Test printer controls carefully. Found an issue? **Please open a GitHub Issue!** Feedback and suggestions are welcome.
 
 ## Features
 
@@ -60,12 +60,25 @@ sudo reboot
 **Update an already working installation** (does not redo X11/autologin):
 
 ```bash
-cd ~/VeloxScreen
-git pull
+cd ~
+[ -d VeloxScreen/.git ] || git clone https://github.com/N1-3D-Print/VeloxScreen.git
+cd VeloxScreen
+git pull --ff-only
 bash scripts/install.sh --skip-deps
 ```
 
 For custom kiosk/console setups see [Advanced installation](docs/INSTALL.md).
+
+## Mainsail / Moonraker updates (optional)
+
+After installing VeloxScreen from a Git clone, enable one-click updates:
+
+```bash
+cd ~/VeloxScreen
+bash scripts/setup-moonraker-updates.sh
+```
+
+Confirm when prompted, then restart Moonraker **when idle**. The setup saves backups of `moonraker.conf`, adds a lower-case `[update_manager veloxscreen]` section matching `veloxscreen.service`, and makes every VeloxScreen service start copy the latest checked Python code. Existing `veloxscreen.conf` and custom logo remain untouched. See [Moonraker updates](docs/MOONRAKER_UPDATES.md).
 
 ## Switch between screens (no uninstall)
 
