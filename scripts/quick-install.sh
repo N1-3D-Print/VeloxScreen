@@ -28,7 +28,7 @@ if [[ ! -e /dev/tty0 ]]; then
   echo 'WARNING: /dev/tty0 is missing. Check that your Pi exposes a Linux virtual console.'
 fi
 
-printf '\nVeloxScreen v0.3.7 alpha - guided installer\n'
+printf '\nVeloxScreen v0.3.8 alpha - guided installer\n'
 printf 'User: %s | Repo: %s\n' "$(id -un)" "$ROOT"
 echo 'Requires Debian 12/compatible system, a connected touchscreen, Klipper + Moonraker.'
 echo 'This will install the app, set up its X11 kiosk and optionally configure tty1 login.'

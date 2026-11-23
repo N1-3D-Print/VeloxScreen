@@ -9,6 +9,7 @@ import re
 import sys
 import time
 import threading
+import wifi_manager
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -1039,7 +1040,7 @@ class TouchCommandDialog(QDialog):
         self.entry.setPlaceholderText(tr('Enter G-Code or macro command'))
         lay.addWidget(self.entry)
         self.alpha_keys = []
-        for chars in ('1234567890', 'QWERTYUIOP', 'ASDFGHJKL', 'ZXCVBNM_-=', './:+,()[]{}'):
+        for chars in ('1234567890', 'QWERTYUIOP', 'ASDFGHJKL', 'ZXCVBNM_-=', './:+,()[]{}', '!@#$%^&*?;~\\|'):
             line = QHBoxLayout()
             line.setSpacing(3)
             for char in chars:
@@ -1562,6 +1563,12 @@ class StartupSplash(QWidget):
         self.deleteLater()
 
 
+class WifiSignals(QObject):
+    scanned = pyqtSignal(object)
+    connected = pyqtSignal(str)
+    failed = pyqtSignal(str)
+
+
 class Screen(QWidget):
     def __init__(self):
         super().__init__()
@@ -1616,6 +1623,12 @@ class Screen(QWidget):
         self.notifications_enabled = conf('notifications', 'enabled', 'true').strip().lower() in ('true', 'yes', '1', 'on')
         self.notification_duration = int(max(2, min(10, fval(conf('notifications', 'duration_seconds', '4'), 4))))
         self._last_notification = ('', 0.0)
+        self.wifi_signals = WifiSignals(self)
+        self.wifi_signals.scanned.connect(self.wifi_scanned)
+        self.wifi_signals.connected.connect(self.wifi_connected)
+        self.wifi_signals.failed.connect(self.wifi_failed)
+        self._wifi_busy = False
+        self._wifi_info = None
         self._notification_timer = QTimer(self)
         self._notification_timer.setSingleShot(True)
         self._notification_timer.timeout.connect(self.hide_notification)
@@ -1653,7 +1666,7 @@ class Screen(QWidget):
                     ('Temperaturen', self.make_temperatures), ('Steuerung', self.make_control),
                     ('LED Effects', self.make_led_effects), ('Dateien', self.make_files), ('Kalibrierung', self.make_calib),
                     ('Konsole', self.make_console), ('Makros', self.make_macros),
-                    ('Einstellungen', self.make_settings)]
+                    ('Network', self.make_network), ('Einstellungen', self.make_settings)]
         self.compact_nav = None
         if self.compact:
             self.compact_nav = QComboBox()
@@ -1672,7 +1685,7 @@ class Screen(QWidget):
             self.pages[name] = self._page(name, builder)
             self.stack.addWidget(self.pages[name])
         sl.addStretch()
-        sl.addWidget(label('v0.3.6 alpha', 'caption'))
+        sl.addWidget(label('v0.3.8 alpha', 'caption'))
         if self.compact:
             sidebar.hide()
         else:
@@ -1712,6 +1725,8 @@ class Screen(QWidget):
             b.setChecked(n == name)
         if name == 'Dateien':
             self.network.load_files(None)
+        if name == 'Network':
+            self.scan_wifi()
 
 
     def show_startup_splash(self, force=False, duration=None, animated=None):
@@ -2314,6 +2329,108 @@ class Screen(QWidget):
         except OSError as exc:
             self.notification_duration = old
             warn(self, 'Settings', 'Could not save config: ' + str(exc))
+
+    def make_network(self, l):
+        f, c = card('Wi-Fi / NetworkManager')
+        self.wifi_status = label('Tap Scan to find Wi-Fi networks.', 'caption')
+        c.addWidget(self.wifi_status)
+        self.wifi_ip = label('IP address: --', 'caption')
+        c.addWidget(self.wifi_ip)
+        self.wifi_scan_button = button('Scan Wi-Fi', self.scan_wifi, True)
+        c.addWidget(self.wifi_scan_button)
+        c.addWidget(label('Connecting to another Wi-Fi can interrupt SSH and Moonraker access.', 'caption'))
+        l.addWidget(f)
+        f, c = card('Available networks')
+        self.wifi_networks_area = QVBoxLayout()
+        c.addLayout(self.wifi_networks_area)
+        c.addWidget(label('Requires NetworkManager (nmcli). WPA-Personal/open networks only. '
+                          'Enterprise and WPA3-only networks may require manual configuration.', 'caption'))
+        l.addWidget(f)
+
+    def scan_wifi(self):
+        if self._wifi_busy:
+            return
+        self._wifi_busy = True
+        self.wifi_scan_button.setEnabled(False)
+        self.wifi_status.setText('Scanning Wi-Fi networks...')
+        def work():
+            try:
+                self.wifi_signals.scanned.emit(wifi_manager.network_info())
+            except Exception as exc:
+                self.wifi_signals.failed.emit(str(exc))
+        threading.Thread(target=work, daemon=True).start()
+
+    def wifi_scanned(self, info):
+        self._wifi_busy = False
+        self.wifi_scan_button.setEnabled(True)
+        self._wifi_info = info
+        self.wifi_status.setText('Wi-Fi device: ' + info['iface'])
+        self.wifi_ip.setText('IP address: ' + info['ip'])
+        while self.wifi_networks_area.count():
+            item = self.wifi_networks_area.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
+        networks = info['networks']
+        if not networks:
+            self.wifi_networks_area.addWidget(label('No visible networks found. Try Scan again.'))
+        for net in networks:
+            security = 'Open' if net['security'] in ('', '--') else 'Secured'
+            title = '{}  ·  {}%  ·  {}{}'.format(net['ssid'], net['signal'], security,
+                                                   '  ✓ Connected' if net['active'] else '')
+            b = button(title, partial(self.choose_wifi, dict(net)))
+            b.setToolTip(net['ssid'])
+            b.setEnabled(not net['active'])
+            self.wifi_networks_area.addWidget(b)
+
+    def choose_wifi(self, network):
+        if self._wifi_busy or not self._wifi_info:
+            return
+        if network['active']:
+            return
+        ssid = network['ssid']
+        secured = network['security'] not in ('', '--')
+        question = ('Connect to "{}"?\n\nChanging networks may disconnect this touchscreen '
+                    'from Moonraker or interrupt your SSH connection.').format(ssid)
+        if QMessageBox.question(self, 'Change Wi-Fi', question,
+                                QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
+            return
+        password = ''
+        if secured:
+            dialog = TouchCommandDialog(self, '')
+            dialog.setWindowTitle('Wi-Fi password · ' + ssid)
+            dialog.entry.setPlaceholderText('Wi-Fi password (leave blank for saved profile)')
+            dialog.entry.setEchoMode(QLineEdit.Password)
+            # Avoid showing the secret in a generic 'Use command' context.
+            dialog.layout().itemAt(dialog.layout().count()-1).layout().itemAt(1).widget().setText('Connect')
+            if dialog.exec_() != QDialog.Accepted:
+                return
+            password = dialog.entry.text()
+            dialog.entry.clear()
+        self._wifi_busy = True
+        self.wifi_scan_button.setEnabled(False)
+        self.wifi_status.setText('Connecting to ' + ssid + ' ...')
+        iface = self._wifi_info['iface']
+        def work():
+            try:
+                self.wifi_signals.connected.emit(
+                    wifi_manager.connect_wifi(iface, ssid, password, secured))
+            except Exception as exc:
+                self.wifi_signals.failed.emit(str(exc))
+        threading.Thread(target=work, daemon=True).start()
+
+    def wifi_connected(self, message):
+        self._wifi_busy = False
+        self.wifi_scan_button.setEnabled(True)
+        self.wifi_status.setText(message)
+        self.scan_wifi()
+
+    def wifi_failed(self, error):
+        self._wifi_busy = False
+        self.wifi_scan_button.setEnabled(True)
+        self.wifi_status.setText('Wi-Fi error: ' + error)
+        warn(self, 'Wi-Fi', error + '\n\nIf permissions are denied, check NetworkManager '
+             'and PolicyKit permissions for the VeloxScreen user. No root access is granted by VeloxScreen.')
 
     def make_settings(self, l):
         f, c = card('Startup screen')

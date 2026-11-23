@@ -1,3 +1,13 @@
+## v0.3.8-alpha — Wi-Fi network page (experimental)
+
+- New Network page: current Wi-Fi interface, local IP, nearby networks, signal level, scan and connect.
+- Touch keyboard for WPA-personal credentials, with masked entry; existing saved profiles can be connected without re-entering a password.
+- NetworkManager (`nmcli`) integration without sudo or logging passwords in the application configuration.
+- Explicit warning before switching the current network. If NetworkManager/PolicyKit denies access, VeloxScreen displays the error.
+- Open and WPA-personal networks only; WPA-Enterprise/WPA3-only may need another configuration method.
+- Runtime updater now copies both `main.py` and `wifi_manager.py`.
+- Not yet tested on Raspberry Pi hardware. Network changes may interrupt remote access.
+
 ## v0.3.7-alpha (2026-11-23)
 
 - Bundled the responsive UI from v0.3.6 (experimental 320×240 through larger displays).

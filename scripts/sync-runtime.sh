@@ -5,9 +5,10 @@ set -euo pipefail
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 APP="$HOME/veloxscreen_native"
 SOURCE="$REPO/main.py"
+WIFI_SOURCE="$REPO/wifi_manager.py"
 TARGET="$APP/main.py"
 
-if [[ ! -s "$SOURCE" ]]; then
+if [[ ! -s "$SOURCE" || ! -s "$WIFI_SOURCE" ]]; then
   echo 'VeloxScreen sync: repository source unavailable; keeping current runtime.' >&2
   exit 0
 fi
@@ -24,6 +25,11 @@ if [[ ! -f "$TARGET" ]] || ! cmp -s "$SOURCE" "$TARGET"; then
   install -m 644 "$SOURCE" "$TARGET.new"
   mv -f "$TARGET.new" "$TARGET"
   echo 'VeloxScreen sync: program updated from Git checkout.'
+fi
+/usr/bin/python3 -m py_compile "$WIFI_SOURCE"
+if [[ ! -f "$APP/wifi_manager.py" ]] || ! cmp -s "$WIFI_SOURCE" "$APP/wifi_manager.py"; then
+  install -m 644 "$WIFI_SOURCE" "$APP/wifi_manager.py.new"
+  mv -f "$APP/wifi_manager.py.new" "$APP/wifi_manager.py"
 fi
 if [[ ! -s "$APP/assets/veloxscreen_splash.png" && -s "$REPO/assets/veloxscreen_splash.png" ]]; then
   install -m 644 "$REPO/assets/veloxscreen_splash.png" "$APP/assets/veloxscreen_splash.png"

@@ -6,9 +6,12 @@
 Responsive layout for small Raspberry Pi touchscreens (experimental 320 × 240 to 1024 × 600). No browser required.
 
 > [!WARNING]
-> **Early Alpha (v0.3.7)** — bugs and incomplete features are expected. Test printer controls carefully. Found an issue? **Please open a GitHub Issue!** Feedback and suggestions are welcome.
+> **Early Alpha (v0.3.8)** — bugs and incomplete features are expected. Test printer controls carefully. Found an issue? **Please open a GitHub Issue!** Feedback and suggestions are welcome.
 
 ## Features
+
+- **Network:** Wi-Fi scan, signal, IP address and connection via NetworkManager (experimental, permission-dependent).
+
 
 - **Dashboard:** live speed, flow, acceleration, M220/M221, temperatures and homing.
 - **Printer controls:** tools, heaters, fan sliders, pressure advance and firmware retract.

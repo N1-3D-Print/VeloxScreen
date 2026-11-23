@@ -54,3 +54,7 @@ journalctl -u veloxscreen -b -n 100 --no-pager
 ```
 
 **Before posting:** remove passwords, API tokens, private IPs/URLs, serial numbers, user addresses and any other sensitive information. Avoid uploading an entire printer configuration unless necessary.
+
+## Wi-Fi page: no networks or permission denied
+
+Check `nmcli device status` and `nmcli general permissions` via SSH. The Wi-Fi page requires NetworkManager to manage the wireless interface. Permission problems require fixing the system PolicyKit/user session, not disabling authentication globally. Changes to Wi-Fi may interrupt SSH until the new network is connected.

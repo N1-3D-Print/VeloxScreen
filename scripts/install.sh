@@ -12,7 +12,7 @@ APP="$HOME/veloxscreen_native"
 CFG="$HOME/printer_data/config/veloxscreen.conf"
 STAMP="$(date +%Y%m%d_%H%M%S)"
 
-if [[ ! -s "$ROOT/main.py" || ! -s "$ROOT/assets/veloxscreen_splash.png" ]]; then
+if [[ ! -s "$ROOT/main.py" || ! -s "$ROOT/wifi_manager.py" || ! -s "$ROOT/assets/veloxscreen_splash.png" ]]; then
   echo 'ERROR: Source code or default logo is missing.' >&2
   exit 1
 fi
@@ -48,7 +48,8 @@ if [[ ! -s "$APP/assets/veloxscreen_splash.png" ]]; then
   install -m 644 "$ROOT/assets/veloxscreen_splash.png" "$APP/assets/veloxscreen_splash.png"
 fi
 
-/usr/bin/python3 -m py_compile "$APP/main.py"
+install -m 644 "$ROOT/wifi_manager.py" "$APP/wifi_manager.py"
+/usr/bin/python3 -m py_compile "$APP/main.py" "$APP/wifi_manager.py"
 if systemctl is-active --quiet veloxscreen.service 2>/dev/null; then
   echo 'Restarting the existing VeloxScreen service...'
   sudo systemctl restart veloxscreen.service
