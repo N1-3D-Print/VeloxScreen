@@ -6,9 +6,12 @@
 Responsive layout for small Raspberry Pi touchscreens (experimental 320 × 240 to 1024 × 600). No browser required.
 
 > [!WARNING]
-> **Early Alpha (v0.3.8)** — bugs and incomplete features are expected. Test printer controls carefully. Found an issue? **Please open a GitHub Issue!** Feedback and suggestions are welcome.
+> **Early Alpha (v0.3.9)** — bugs and incomplete features are expected. Test printer controls carefully. Found an issue? **Please open a GitHub Issue!** Feedback and suggestions are welcome.
 
 ## Features
+
+- **Print view:** opens automatically when printing starts (optional), with live print progress, actual speed, extrusion flow and acceleration limit, M220/M221 override buttons and fan sliders. An always-confirmed emergency stop uses Moonraker's dedicated emergency endpoint.
+- **Navigation:** larger, vertically scrollable sidebar on 800 × 480 and larger displays; compact dropdown navigation on small screens.
 
 - **Network:** Wi-Fi scan, signal, IP address and connection via NetworkManager (experimental, permission-dependent).
 
@@ -18,6 +21,17 @@ Responsive layout for small Raspberry Pi touchscreens (experimental 320 × 240 t
 - **Customization:** unlimited temperature presets, macros, themes and `veloxscreen.conf`.
 - **Extras:** Bed Mesh, G-Code console, LED Effects, notifications and animated startup.
 - **Languages:** English (default) and German.
+
+## Print view and emergency stop
+
+The **Print** page opens automatically on a new `printing` state. You can switch to any other page without being forced back during the same print. Configure it using:
+
+```ini
+[print_view]
+auto_open = true
+```
+
+**Emergency Stop:** a red button on the Print page always requires confirmation, regardless of normal command confirmation settings. It calls Moonraker `/printer/emergency_stop` directly, not the normal G-Code queue. It immediately puts Klipper into an emergency shutdown state; recovery will be necessary. Do **not** use it for ordinary pause/cancel actions. Only genuine fans (`fan` and `fan_generic`) have writable controls; temperature- and heater-controlled fans are display-only.
 
 ## Display scaling
 

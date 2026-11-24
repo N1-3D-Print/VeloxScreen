@@ -194,6 +194,16 @@ class Network(QObject):
                 self._gcode_running = False
         threading.Thread(target=run, daemon=True).start()
 
+    def emergency_stop(self):
+        """Moonraker's dedicated emergency stop endpoint; never wait in the G-Code FIFO."""
+        def work():
+            try:
+                self.call('/printer/emergency_stop', method='POST')
+                self.reply.emit('Emergency stop sent to Moonraker.')
+            except Exception as exc:
+                self.err.emit('Emergency stop request failed: ' + str(exc))
+        threading.Thread(target=work, daemon=True).start()
+
     def script(self, script):
         # A single FIFO worker preserves G-Code ordering, including fan slider moves.
         with self._script_cv:
@@ -520,7 +530,9 @@ QPushButton:hover { background: #344b6e; }
 QPushButton:pressed { background: #5179ad; }
 QPushButton:disabled { color: #65738a; background: #1a2534; }
 QPushButton#primary { background: #2866bd; border: 1px solid #3377d8; }
-QPushButton#nav { background: #151f2d; text-align: left; border: 0; padding: 8px 6px; font-size: 12px; }
+QPushButton#nav { background: #151f2d; text-align: left; border: 0; padding: 9px 7px; font-size: 15px; min-height: 29px; }
+QPushButton#danger { background: #8f2029; color: #ffffff; border: 2px solid #dd4554; font-size: 16px; font-weight: 800; min-height: 44px; }
+QPushButton#danger:pressed { background: #ad2433; }
 QPushButton#nav:checked { background: #244c79; border-left: 4px solid #75c3ff; }
 QComboBox, QDoubleSpinBox, QLineEdit, QPlainTextEdit { background: #111a27; border: 1px solid #3a4c67; border-radius: 7px; padding: 7px; }
 QScrollArea { border: 0; }
@@ -1629,6 +1641,10 @@ class Screen(QWidget):
         self.wifi_signals.failed.connect(self.wifi_failed)
         self._wifi_busy = False
         self._wifi_info = None
+        # Auto-open only on a transition to printing, not on every refresh.
+        self._previous_print_state = None
+        self.print_fan_widgets = {}
+        self._print_fan_signature = None
         self._notification_timer = QTimer(self)
         self._notification_timer.setSingleShot(True)
         self._notification_timer.timeout.connect(self.hide_notification)
@@ -1648,7 +1664,7 @@ class Screen(QWidget):
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(0)
         sidebar = QFrame()
-        sidebar.setFixedWidth(142 if self.compact else 162)
+        sidebar.setFixedWidth(142 if self.compact else 184 if not self.tiny else 142)
         sidebar.setObjectName('veloxSidebar')
         sl = QVBoxLayout(sidebar)
         sl.setContentsMargins(5, 7, 5, 7)
@@ -1661,8 +1677,18 @@ class Screen(QWidget):
         self.connection = label('● Verbinde ...', 'caption')
         sl.addWidget(self.connection)
         sl.addSpacing(4)
+        # The sidebar is scrollable: bigger navigation remains readable at 800x480.
+        nav_scroll = QScrollArea()
+        nav_scroll.setWidgetResizable(True)
+        nav_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        nav_panel = QWidget()
+        nav_layout = QVBoxLayout(nav_panel)
+        nav_layout.setContentsMargins(0, 0, 1, 0)
+        nav_layout.setSpacing(3)
+        nav_scroll.setWidget(nav_panel)
+        sl.addWidget(nav_scroll, 1)
         self.stack = QStackedWidget()
-        sections = [('Dashboard', self.make_dashboard), ('Tools', self.make_tools),
+        sections = [('Dashboard', self.make_dashboard), ('Print', self.make_print_view), ('Tools', self.make_tools),
                     ('Temperaturen', self.make_temperatures), ('Steuerung', self.make_control),
                     ('LED Effects', self.make_led_effects), ('Dateien', self.make_files), ('Kalibrierung', self.make_calib),
                     ('Konsole', self.make_console), ('Makros', self.make_macros),
@@ -1680,16 +1706,15 @@ class Screen(QWidget):
             nav.setObjectName('nav')
             nav.setCheckable(True)
             nav.clicked.connect(partial(self.navigate, name))
-            sl.addWidget(nav)
+            nav_layout.addWidget(nav)
             self.nav_buttons[name] = nav
             self.pages[name] = self._page(name, builder)
             self.stack.addWidget(self.pages[name])
-        sl.addStretch()
-        sl.addWidget(label('v0.3.8 alpha', 'caption'))
-        if self.compact:
-            sidebar.hide()
-        else:
-            outer.addWidget(sidebar)
+        nav_layout.addStretch()
+        sl.addWidget(label('v0.3.9 alpha', 'caption'))
+        # IMPORTANT: Qt otherwise deletes self.connection and all nav buttons.
+        outer.addWidget(sidebar)
+        sidebar.setVisible(not self.compact)
         content_side = QWidget()
         content_layout = QVBoxLayout(content_side)
         content_layout.setContentsMargins(0, 0, 0, 0)
@@ -1943,6 +1968,130 @@ class Screen(QWidget):
         # Restart only the Python UI; the X11 session and Mainsail service remain alive.
         self.timer.stop()
         QTimer.singleShot(100, self._restart_now)
+
+    def make_print_view(self, l):
+        """Live printing control page (opens on print start, stays navigable)."""
+        f, c = card('Current print')
+        self.print_status_label = label('Waiting for printer status...', 'caption')
+        self.print_status_label.setWordWrap(True)
+        c.addWidget(self.print_status_label)
+        self.print_progress_label = label('-- %', 'metric')
+        c.addWidget(self.print_progress_label)
+        l.addWidget(f)
+
+        # Emergency stop is intentionally visible before scrolling down.
+        stop = QPushButton('EMERGENCY STOP  ·  M112')
+        stop.setObjectName('danger')
+        stop.setMinimumHeight(50 if not self.tiny else 44)
+        stop.setToolTip('Immediately stops Klipper. Requires firmware restart/recovery.')
+        stop.clicked.connect(self.request_emergency_stop)
+        l.addWidget(stop)
+
+        grid = QGridLayout()
+        self.print_metrics = {}
+        for index, (title, unit, key) in enumerate((
+                ('Actual speed', 'mm/s', 'speed'),
+                ('Extrusion flow', 'mm³/s', 'flow'),
+                ('Accel limit', 'mm/s²', 'accel'))):
+            f, c = card(title)
+            value = label('--', 'metric')
+            self.print_metrics[key] = value
+            c.addWidget(value)
+            c.addWidget(label(unit, 'caption'))
+            cols = 1 if self.tiny else 2 if self.compact else 3
+            grid.addWidget(f, index // cols, index % cols)
+        l.addLayout(grid)
+
+        l.addWidget(label('Live overrides  ·  M220 / M221', 'caption'))
+        self.add_override_controls(l)
+
+        f, c = card('Fans  ·  live control')
+        self.print_fan_area = QVBoxLayout()
+        self.print_fan_area.setSpacing(7)
+        c.addLayout(self.print_fan_area)
+        l.addWidget(f)
+        l.addWidget(label('Fans are discovered automatically. Temperature-controlled fans are read-only.', 'caption'))
+
+    def request_emergency_stop(self):
+        """Always confirm, even when normal macro confirmations are disabled."""
+        message = ('EMERGENCY STOP will immediately shut down Klipper.\n\n'
+                   'Motors and heaters will be disabled and the current print will fail.\n'
+                   'A firmware restart and printer recovery may be required.\n\n'
+                   'Really trigger emergency stop?')
+        if QMessageBox.warning(self, 'EMERGENCY STOP', message,
+                               QMessageBox.Yes | QMessageBox.No,
+                               QMessageBox.No) != QMessageBox.Yes:
+            return
+        self.network.emergency_stop()
+
+    def update_print_fans(self, st):
+        """Independent sliders for the print page; shares pending commands with Control."""
+        fans = [x for x in self.all_objects if x == 'fan' or x.startswith(
+            ('fan_generic ', 'heater_fan ', 'temperature_fan '))]
+        desired = [x.strip() for x in conf('layout', 'fan_order').split(',') if x.strip()]
+        fans.sort(key=lambda name: (0, desired.index(name)) if name in desired else (1, name))
+        signature = tuple(fans)
+        if signature != self._print_fan_signature:
+            self._print_fan_signature = signature
+            self.print_fan_widgets = {}
+            while self.print_fan_area.count():
+                item = self.print_fan_area.takeAt(0)
+                if item.widget() is not None:
+                    item.widget().deleteLater()
+            for name in fans:
+                frame, content = card(name)
+                info = label('-- %', 'caption')
+                content.addWidget(info)
+                slider = None
+                if name == 'fan' or name.startswith('fan_generic '):
+                    slider = QSlider(Qt.Horizontal)
+                    slider.setRange(0, 100)
+                    slider.setSingleStep(1)
+                    slider.setPageStep(5)
+                    slider.setMinimumHeight(39)
+                    slider.setStyleSheet(fan_slider_style(self.theme))
+                    slider.valueChanged.connect(partial(self.print_fan_slider_changed, name))
+                    slider.sliderReleased.connect(partial(self.print_fan_slider_released, name))
+                    content.addWidget(slider)
+                else:
+                    content.addWidget(label('Automatic fan  ·  read-only', 'caption'))
+                self.print_fan_widgets[name] = (info, slider)
+                self.print_fan_area.addWidget(frame)
+            if not fans:
+                self.print_fan_area.addWidget(label('No fans detected yet.', 'caption'))
+        for name, (info, slider) in self.print_fan_widgets.items():
+            current = round(fval(st.get(name, {}).get('speed')) * 100)
+            pending = self._fan_pending.get(name)
+            if pending and abs(current - pending[0]) > 1 and time.monotonic() - pending[1] < 4:
+                current = pending[0]
+            if slider is not None:
+                if slider.isSliderDown():
+                    info.setText(f'{slider.value()} %')
+                    continue
+                slider.blockSignals(True)
+                slider.setValue(current)
+                slider.blockSignals(False)
+            info.setText(f'{current} %')
+
+    def print_fan_slider_changed(self, name, value):
+        pair = self.print_fan_widgets.get(name)
+        if pair is not None:
+            pair[0].setText(f'{value} %')
+
+    def print_fan_slider_released(self, name):
+        pair = self.print_fan_widgets.get(name)
+        if pair is None or pair[1] is None:
+            return
+        value = pair[1].value()
+        if self._fan_last_sent.get(name) == value:
+            return
+        self._fan_last_sent[name] = value
+        self._fan_pending[name] = (value, time.monotonic())
+        if name == 'fan':
+            command = f'M106 S{round(value * 255 / 100)}'
+        else:
+            command = f'SET_FAN_SPEED FAN={name.split(" ", 1)[1]} SPEED={value / 100:.3f}'
+        self.network.script(command)
 
     def make_dashboard(self, l):
         grid = QGridLayout()
@@ -2207,7 +2356,7 @@ class Screen(QWidget):
         STYLE = themed_style(THEME)
         self.setStyleSheet(scaled_style(STYLE, self.ui_scale))
         # Fan sliders use a custom stylesheet, so refresh it explicitly.
-        for _name, (_text, slider) in getattr(self, 'fan_widgets', {}).items():
+        for _name, (_text, slider) in list(getattr(self, 'fan_widgets', {}).items()) + list(getattr(self, 'print_fan_widgets', {}).items()):
             if slider is not None:
                 slider.setStyleSheet(fan_slider_style(THEME))
         self.update_theme_summary()
@@ -2710,6 +2859,19 @@ class Screen(QWidget):
         self.motion_limit_buttons['velocity'].setText(tr('Max speed') + ': ' + fmt(toolhead.get('max_velocity'), 0) + ' mm/s  ✎')
         self.motion_limit_buttons['accel'].setText(tr('Max accel') + ': ' + fmt(toolhead.get('max_accel'), 0) + ' mm/s²  ✎')
         ps = st.get('print_stats', {})
+        state = ps.get('state', 'standby')
+        previous = self._previous_print_state
+        self._previous_print_state = state
+        if state == 'printing' and previous != 'printing' and QApplication.activeModalWidget() is None and (
+                conf('print_view', 'auto_open', 'true').strip().lower() in ('true', '1', 'yes', 'on')):
+            self.navigate('Print')
+        progress = fval(st.get('virtual_sdcard', {}).get('progress')) * 100
+        self.print_status_label.setText(str(ps.get('filename') or 'No file') + '  ·  ' + str(state))
+        self.print_progress_label.setText(f'{progress:.0f} %')
+        for key, value in (('speed', fmt(motion.get('live_velocity'))),
+                           ('flow', fmt(abs(flow))),
+                           ('accel', fmt(toolhead.get('max_accel'), 0))):
+            self.print_metrics[key].setText(value)
         # Block M84 for active/paused prints, and until Klipper state is known.
         idle = (isinstance(ps, dict) and bool(ps.get('state'))
                 and ps.get('state') not in ('printing', 'paused'))
@@ -2726,6 +2888,7 @@ class Screen(QWidget):
         self.update_discovered_tools(st)
         self.update_temps(st)
         self.update_fans(st)
+        self.update_print_fans(st)
         self.update_led_effects(st)
         self.update_calib(st)
 

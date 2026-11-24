@@ -1,3 +1,14 @@
+## v0.3.9-alpha — Print view and larger navigation
+
+- Auto-open print view on transition into `printing`, with optional `[print_view] auto_open = true`.
+- Show progress, filename, live speed (mm/s), extrusion flow (mm³/s), current acceleration limit (mm/s²).
+- M220 speed and M221 flow override controls stay synced across pages.
+- Live fan control for writable fans; heater and temperature fans remain read-only.
+- Always-confirmed Emergency Stop button uses Moonraker `/printer/emergency_stop` immediately.
+- Larger sidebar navigation with vertical scrolling; compact layouts still use the top dropdown.
+- Fix the compact-mode crash (`wrapped C/C++ object of type QLabel has been deleted`) by retaining the hidden sidebar in its parent layout.
+- Pre-release, hardware testing pending.
+
 ## v0.3.8-alpha — Wi-Fi network page (experimental)
 
 - New Network page: current Wi-Fi interface, local IP, nearby networks, signal level, scan and connect.
