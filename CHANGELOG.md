@@ -1,3 +1,11 @@
+## v0.3.14-alpha — Printer fault and shutdown recovery
+
+- Poll Moonraker server and printer status independently of object queries, including during Klipper shutdown.
+- Automatically open Recovery for printer errors, shutdown and lost connections; keep a visible status banner on other pages.
+- Show original Klipper state message and distinguish reported M112 from other shutdowns.
+- Confirm firmware restart, Klipper restart and host reboot separately; show request results. No automatic restart or print resume.
+- Native Qt hardware testing pending.
+
 ## v0.3.13-alpha — Print temperature controls
 
 - Add live actual and editable target temperatures for every detected hotend, bed and generic heater on Print.

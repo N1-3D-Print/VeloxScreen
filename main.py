@@ -102,6 +102,8 @@ class Network(QObject):
     reply = pyqtSignal(str)
     gcode_messages = pyqtSignal(object)
     emergency_triggered = pyqtSignal()
+    printer_health = pyqtSignal(object)
+    recovery_result = pyqtSignal(str)
 
     def __init__(self, url):
         super().__init__()
@@ -133,6 +135,25 @@ class Network(QObject):
 
         def run():
             try:
+                # Server info remains available even when Klippy cannot answer object queries.
+                try:
+                    info = self.call('/server/info').get('result', {})
+                except Exception as exc:
+                    self.printer_health.emit({'state': 'offline', 'message': str(exc)})
+                    return
+                state = str(info.get('klippy_state') or 'unknown').lower()
+                message = ''
+                if state != 'disconnected':
+                    try:
+                        detail = self.call('/printer/info').get('result', {})
+                        state = str(detail.get('state') or state).lower()
+                        message = str(detail.get('state_message') or '')
+                    except Exception:
+                        pass  # Server state is still useful if Klippy is unreachable.
+                self.printer_health.emit({'state': state, 'message': message})
+                if state != 'ready':
+                    self.objects = []
+                    return
                 if not self.objects or self._tick % 30 == 0:
                     discovered = self.call('/printer/objects/list')
                     self.objects = discovered.get('result', {}).get('objects', [])
@@ -222,9 +243,11 @@ class Network(QObject):
             try:
                 self.call(path, method='POST')
                 self.reply.emit(message)
+                self.recovery_result.emit(message + ' Waiting for printer status...')
             except Exception as exc:
                 # The host may deliberately disconnect Moonraker during a reboot.
                 # A failed request is not automatically proof of a successful restart.
+                self.recovery_result.emit('Recovery request status unknown: ' + str(exc))
                 self.err.emit('Recovery request status unknown: ' + str(exc))
         threading.Thread(target=work, daemon=True).start()
 
@@ -1631,7 +1654,12 @@ class Screen(QWidget):
         self.network.err.connect(self.error)
         self.network.reply.connect(self.response)
         self.network.gcode_messages.connect(self.handle_gcode_messages)
-        self.network.emergency_triggered.connect(self.open_recovery_menu)
+        self.network.emergency_triggered.connect(self.emergency_confirmed)
+        self.network.printer_health.connect(self.update_printer_health)
+        self.network.recovery_result.connect(self.show_recovery_result)
+        self._health_state = 'unknown'
+        self._health_message = ''
+        self._local_estop = False
         self.busy_files = False
         self.selected_file = ''
         self.pages = {}
@@ -1727,7 +1755,7 @@ class Screen(QWidget):
         nav_scroll.setWidget(nav_panel)
         sl.addWidget(nav_scroll, 1)
         self.stack = QStackedWidget()
-        sections = [('Dashboard', self.make_dashboard), ('Print', self.make_print_view), ('Tools', self.make_tools),
+        sections = [('Dashboard', self.make_dashboard), ('Print', self.make_print_view), ('Recovery', self.make_recovery_page), ('Tools', self.make_tools),
                     ('Temperaturen', self.make_temperatures), ('Steuerung', self.make_control),
                     ('LED Effects', self.make_led_effects), ('Dateien', self.make_files), ('Kalibrierung', self.make_calib),
                     ('Konsole', self.make_console), ('Makros', self.make_macros),
@@ -1750,7 +1778,7 @@ class Screen(QWidget):
             self.pages[name] = self._page(name, builder)
             self.stack.addWidget(self.pages[name])
         nav_layout.addStretch()
-        sl.addWidget(label('v0.3.13 alpha', 'caption'))
+        sl.addWidget(label('v0.3.14 alpha', 'caption'))
         # IMPORTANT: Qt otherwise deletes self.connection and all nav buttons.
         outer.addWidget(sidebar)
         sidebar.setVisible(not self.compact)
@@ -1762,6 +1790,11 @@ class Screen(QWidget):
             content_layout.addWidget(self.compact_nav)
         # No service controls in the header: settings owns the local restart action.
         # This also gives the 800x480 screens more usable height.
+        self.health_banner = QPushButton('Printer status')
+        self.health_banner.setMinimumHeight(32)
+        self.health_banner.clicked.connect(lambda: self.navigate('Recovery'))
+        self.health_banner.hide()
+        content_layout.addWidget(self.health_banner)
         content_layout.addWidget(self.stack, 1)
         outer.addWidget(content_side, 1)
         self.navigate('Dashboard')
@@ -2075,50 +2108,76 @@ class Screen(QWidget):
             return
         self.network.emergency_stop()
 
-    def open_recovery_menu(self):
-        """Touch-friendly recovery UI after M112 or an MCU shutdown.
+    def make_recovery_page(self, l):
+        self.health_title = label('Waiting for printer status', 'title')
+        l.addWidget(self.health_title)
+        # Plain text preserves Klipper's exact message without interpreting markup.
+        self.health_detail = label('Waiting for Moonraker...')
+        self.health_detail.setTextFormat(Qt.PlainText)
+        self.health_detail.setWordWrap(True)
+        l.addWidget(self.health_detail)
+        self.health_result = label('', 'caption')
+        self.health_result.setTextFormat(Qt.PlainText)
+        l.addWidget(self.health_result)
+        l.addWidget(label('Correct the underlying fault before restarting. '
+                          'A failed print is not resumed automatically.', 'caption'))
+        for title, action in (('Firmware Restart', 'firmware'),
+                              ('Restart Klipper', 'klipper'),
+                              ('Reboot Host (Raspberry Pi)', 'host')):
+            l.addWidget(button(title, partial(self._choose_recovery_action, action), action == 'firmware'))
+        l.addWidget(button('Dashboard', lambda: self.navigate('Dashboard')))
 
-        Keeping an entry point on Print and Settings makes recovery possible
-        when the M112 popup is dismissed or the UI was restarted.
-        """
-        existing = getattr(self, '_recovery_dialog', None)
-        if existing is not None and existing.isVisible():
-            existing.raise_()
+    def emergency_confirmed(self):
+        self._local_estop = True
+        self.update_printer_health({'state': 'shutdown', 'message': 'Emergency stop accepted by Moonraker. Waiting for Klipper status.'})
+        self.navigate('Recovery')
+
+    def show_recovery_result(self, message):
+        self.health_result.setText(message)
+
+    def update_printer_health(self, info):
+        state = info.get('state', 'unknown')
+        message = info.get('message', '')
+        previous = self._health_state
+        self._health_state = state
+        self._health_message = message
+        if state == 'ready':
+            self._local_estop = False
+            self.health_title.setText('READY')
+            self.health_title.setStyleSheet('color: #66d49b; font-weight: bold;')
+            self.health_detail.setText(message or 'Klipper is ready.')
+            self.health_banner.hide()
+            if previous != 'ready':
+                self.health_result.setText('Printer ready.')
             return
-        dialog = QDialog(self)
-        dialog.setWindowTitle('Klipper Recovery')
-        dialog.setModal(True)
-        screen = QApplication.primaryScreen()
-        geometry = screen.availableGeometry() if screen is not None else None
-        width = geometry.width() if geometry is not None else 800
-        height = geometry.height() if geometry is not None else 480
-        dialog.resize(min(max(240, int(width * .86)), width),
-                      min(max(180, int(height * .83)), height))
-        outer = QVBoxLayout(dialog)
-        outer.setContentsMargins(7, 7, 7, 7)
-        info = label('Klipper has stopped or needs recovery. Select an action below. '
-                     'A restart does not resume the interrupted print.', 'caption')
-        info.setWordWrap(True)
-        outer.addWidget(info)
-        area = FingerScrollArea()
-        content = QWidget()
-        controls = QVBoxLayout(content)
-        controls.setContentsMargins(3, 3, 3, 3)
-        controls.setSpacing(6)
-        for title, action in (
-                ('Restart Klipper', 'klipper'),
-                ('Firmware Restart', 'firmware'),
-                ('Reboot Host (Raspberry Pi)', 'host')):
-            b = button(title, partial(self._choose_recovery_action, action))
-            b.setMinimumHeight(43)
-            controls.addWidget(b)
-        controls.addStretch()
-        area.setWidget(content)
-        outer.addWidget(area, 1)
-        outer.addWidget(button('Close', dialog.reject))
-        self._recovery_dialog = dialog
-        dialog.finished.connect(lambda _: setattr(self, '_recovery_dialog', None))
-        dialog.open()  # Non-blocking; network polling remains active.
+        fault = state in ('error', 'shutdown', 'offline', 'disconnected')
+        explicit_stop = ('m112' in message.lower() or 'emergency stop' in message.lower())
+        if state == 'shutdown' and (self._local_estop or explicit_stop):
+            title = 'EMERGENCY STOP / SHUTDOWN'
+        else:
+            title = {'shutdown': 'KLIPPER SHUTDOWN', 'error': 'PRINTER ERROR',
+                     'offline': 'MOONRAKER OFFLINE', 'disconnected': 'KLIPPER DISCONNECTED',
+                     'startup': 'KLIPPER STARTING'}.get(state, 'PRINTER STATUS: ' + str(state).upper())
+        color = '#ff7474' if fault else '#f4c36c'
+        self.health_title.setText(title)
+        self.health_title.setStyleSheet('color: ' + color + '; font-weight: bold;')
+        self.health_detail.setText(message or 'No detailed Klipper message available yet.')
+        self.health_banner.setText(title + '  ›')
+        self.health_banner.setStyleSheet('QPushButton { background: ' + ('#922b35' if fault else '#77551d') + '; color: white; font-weight: bold; }')
+        self.health_banner.show()
+        self._print_temp_live = False
+        for reading, target in self.print_temp_widgets.values():
+            reading.setText('-- °C')
+            if target is not None:
+                target.setEnabled(False)
+        # Navigate once per fault transition, not on every poll. A persistent banner
+        # remains visible on other pages.
+        if fault and state != previous:
+            self.health_result.setText('')
+            self.navigate('Recovery')
+
+    def open_recovery_menu(self):
+        self.navigate('Recovery')
 
     def _choose_recovery_action(self, action):
         descriptions = {
@@ -2142,6 +2201,7 @@ class Screen(QWidget):
         dialog = getattr(self, '_recovery_dialog', None)
         if dialog is not None:
             dialog.accept()
+        self.health_result.setText('Sending ' + name + '...')
         self.network.recovery_action(action)
 
     def update_print_fans(self, st):
