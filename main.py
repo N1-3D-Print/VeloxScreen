@@ -204,6 +204,67 @@ def manual_motion_allowed(status, axes=''):
             and isinstance(homed, str) and all(a in homed for a in axes))
 
 
+def discovered_tool_mapping(objects, mapping):
+    """Preserve actual numeric tool IDs and optional explicit mappings."""
+    detected = {n for n in objects if n == 'extruder' or re.fullmatch(r'extruder\d+', n)}
+    result = {}
+    for tool, extruder in mapping.items():
+        tool = tool.strip().upper()
+        if re.fullmatch(r'T\d+', tool) and tool not in result and extruder in detected and extruder not in result.values():
+            result[tool] = extruder
+    for extruder in sorted(detected, key=lambda n: 0 if n == 'extruder' else int(n[8:])):
+        if extruder not in result.values():
+            tool = 'T0' if extruder == 'extruder' else 'T' + extruder[8:]
+            result[tool if tool not in result else extruder] = extruder
+    return result
+
+
+def filament_macro_commands(objects, overrides, tool, extruder):
+    """Resolve existing macros only; never synthesize filament movement."""
+    macros = {n.split(' ', 1)[1].upper(): n for n in objects if n.lower().startswith('gcode_macro ')}
+    candidates = {
+        'load': ('LOAD_FILAMENT', 'FILAMENT_LOAD'),
+        'unload': ('UNLOAD_FILAMENT', 'FILAMENT_UNLOAD'),
+        'load_all': ('LOAD_ALL', 'LOAD_ALL_FILAMENT', 'FILAMENT_LOAD_ALL'),
+        'unload_all': ('UNLOAD_ALL', 'UNLOAD_ALL_FILAMENT', 'FILAMENT_UNLOAD_ALL'),
+    }
+    result = {}
+    for action, defaults in candidates.items():
+        if action in overrides:
+            command = overrides[action].strip().replace('{tool}', tool).replace('{extruder}', extruder)
+        else:
+            command = next((n for n in defaults if n in macros), '')
+        if not command or any(c in command for c in '\r\n;{}|'):
+            continue
+        name = command.split()[0].upper()
+        if name in macros:
+            result[action] = (command, macros[name])
+    return result
+
+
+def motion_requirements(feature):
+    """A queued operation may require both a macro and the active heater."""
+    active = ''
+    required = []
+    for item in filter(None, feature.split('|')):
+        if item.startswith('active:'):
+            active = item.removeprefix('active:')
+            required.append(active)
+        else:
+            required.append(item)
+    return active, required
+
+
+def tool_change_command(objects, overrides, tool):
+    """Only call a discovered macro; never assume ACTIVATE_EXTRUDER changes tools."""
+    command = overrides.get(tool, tool if re.fullmatch(r'T\d+', tool) else '').strip()
+    if not command or any(c in command for c in '\r\n;{}|'):
+        return '', ''
+    name = command.split()[0].upper()
+    macro = next((n for n in objects if n.upper() == 'GCODE_MACRO ' + name), '')
+    return (command, macro) if macro else ('', '')
+
+
 Z_STEPS = (.005, .01, .025, .05)
 
 
@@ -855,19 +916,22 @@ class Network(QObject):
         health = self.call('/printer/info').get('result', {})
         if health.get('state') != 'ready':
             raise RuntimeError('Klipper is not ready; motion blocked.')
-        if required_object:
+        active_required, required = motion_requirements(required_object)
+        if required:
             objects = self.call('/printer/objects/list').get('result', {}).get('objects', [])
-            if required_object not in objects:
-                raise RuntimeError('Calibration feature is no longer available.')
+            if any(obj not in objects for obj in required):
+                raise RuntimeError('Required printer object is no longer available.')
         query = '/printer/objects/query?print_stats&virtual_sdcard&toolhead'
         if 'pause_resume' in self.objects:
             query += '&pause_resume'
         status = self.call(query).get('result', {}).get('status', {})
         if not manual_motion_allowed(status, axes):
             raise RuntimeError('Manual motion blocked: printer is not confirmed idle or required axes are not homed.')
-        # Homing and gantry calibration can take longer than the normal HTTP timeout.
-        # Never retry a timed-out command automatically.
-        return self.call('/printer/gcode/script', 'POST', {'script': script}, timeout=120)
+        if active_required and status.get('toolhead', {}).get('extruder') != active_required:
+            raise RuntimeError('Active extruder changed; command blocked.')
+        # Filament macros may include heating waits. Never retry automatically.
+        timeout = 900 if any(n.lower().startswith('gcode_macro ') for n in required) else 120
+        return self.call('/printer/gcode/script', 'POST', {'script': script}, timeout=timeout)
 
     def _script_worker(self):
         while True:
@@ -949,6 +1013,11 @@ _I18N = [
     ('Referenziert: ', 'Homed: '),
     ('keine Achse', 'none'),
     ('Extruder wird erkannt ...', 'Detecting extruder ...'),
+    ('Ausgewähltes Tool aktivieren', 'Activate selected tool'),
+    ('Tool-Temperatur einstellen', 'Set tool temperature'),
+    ('Laden', 'Load'), ('Entladen', 'Unload'),
+    ('Alle laden', 'Load All'), ('Alle entladen', 'Unload All'),
+    ('Aktiviere das ausgewählte Tool vor dem Laden oder Entladen.', 'Activate the selected tool before loading or unloading.'),
     ('Aktiver Extruder:', 'Active extruder:'),
     ('Düse:', 'Nozzle:'),
     ('Länge (mm)', 'Length (mm)'),
@@ -1037,6 +1106,9 @@ _I18N = [
 _I18N.sort(key=lambda p: len(p[0]), reverse=True)
 
 _ADDED_EN_DE = {
+    ('Activate selected tool', 'Ausgewähltes Tool aktivieren'),
+    ('Set tool temperature', 'Tool-Temperatur einstellen'),
+    ('Activate the selected tool before loading or unloading.', 'Aktiviere das ausgewählte Tool vor dem Laden oder Entladen.'),
     ('Print Files', 'Druckdateien'),
     ('Exclude Object', 'Objekt ausschließen'),
     ('Bed view', 'Bettansicht'), ('Object list', 'Objektliste'),
@@ -1241,6 +1313,8 @@ _ADDED_EN_DE = {
 def tr(message):
     text = str(message)
     if LANGUAGE == 'de':
+        if text in ('Load', 'Unload', 'Load All', 'Unload All'):
+            return {'Load': 'Laden', 'Unload': 'Entladen', 'Load All': 'Alle laden', 'Unload All': 'Alle entladen'}[text]
         if text == 'Dateien':
             return 'Druckdateien'
         for english, german in sorted(_ADDED_EN_DE, key=lambda pair: len(pair[0]), reverse=True):
@@ -2978,7 +3052,7 @@ class Screen(QWidget):
             self.pages[name] = self._page(name, builder)
             self.stack.addWidget(self.pages[name])
         nav_layout.addStretch()
-        sl.addWidget(label('v0.4.7 alpha', 'caption'))
+        sl.addWidget(label('v0.4.8 alpha', 'caption'))
         # IMPORTANT: Qt otherwise deletes self.connection and all nav buttons.
         outer.addWidget(sidebar)
         sidebar.setVisible(not self.compact)
@@ -3880,6 +3954,19 @@ class Screen(QWidget):
         self.tool_selector = QComboBox()
         self.tool_selector.currentTextChanged.connect(self.update_tool)
         c.addWidget(self.tool_selector)
+        self.tool_button_grid = QGridLayout()
+        self.tool_button_grid.setSpacing(5)
+        c.addLayout(self.tool_button_grid)
+        self.tool_buttons = {}
+        self._tool_mapping = {}
+        self.activate_tool_button = button('Activate selected tool', self.activate_selected_tool)
+        self.tool_temperature_button = button('Set tool temperature', self.set_selected_tool_temperature)
+        self.activate_tool_button.hide()
+        self.activate_tool_button.setEnabled(False)
+        self.tool_temperature_button.setEnabled(False)
+        c.addLayout(row(self.activate_tool_button, self.tool_temperature_button))
+        self.selected_heating_status = label('Target unavailable', 'caption')
+        c.addWidget(self.selected_heating_status)
         self.s['tool_info'] = label('Extruder wird erkannt ...')
         c.addWidget(self.s['tool_info'])
         c.addWidget(label('Pressure Advance', 'caption'))
@@ -3888,7 +3975,8 @@ class Screen(QWidget):
         self.pa_spin.setDecimals(4)
         self.pa_spin.setSingleStep(.005)
         self.pa_spin.setRange(0, 1)
-        c.addLayout(row(self.pa_spin, button('Übernehmen', self.apply_pa, True)))
+        self.pa_apply_button = button('Übernehmen', self.apply_pa, True)
+        c.addLayout(row(self.pa_spin, self.pa_apply_button))
         l.addWidget(f)
         l = self.layout_block('tools_order', root, 'retract', 'Firmware Retract')
         f, c = card('Firmware Retract')
@@ -3911,12 +3999,30 @@ class Screen(QWidget):
         f, c = card('Extrusion')
         c.addWidget(label('Extrusion nur bei ausreichend heißem, aktivem Hotend und ohne laufenden Druck. Klipper prüft zusätzlich seine Grenzwerte.', 'caption'))
         self.extrude_len = QComboBox()
-        self.extrude_len.addItems([str(x).rstrip('0').rstrip('.') for x in options('extrusion', 'lengths', '1, 5, 10, 50, 100')])
+        self.extrude_len.addItems([f'{x:g}' for x in options('extrusion', 'lengths', '1, 5, 10, 50, 100')])
         self.extrude_speed = QComboBox()
-        self.extrude_speed.addItems([str(x).rstrip('0').rstrip('.') for x in options('extrusion', 'speeds', '2, 5, 10, 20, 50')])
+        self.extrude_speed.addItems([f'{x:g}' for x in options('extrusion', 'speeds', '2, 5, 10, 20, 50')])
         c.addLayout(row(label('Länge mm'), self.extrude_len, label('mm/s'), self.extrude_speed))
-        c.addLayout(row(button('Extrudieren', partial(self.extrude, 1), True),
-                        button('Zurückziehen', partial(self.extrude, -1))))
+        self.extrude_buttons = (button('Extrudieren', partial(self.extrude, 1), True),
+                                button('Zurückziehen', partial(self.extrude, -1)))
+        for widget in self.extrude_buttons:
+            widget.setEnabled(False)
+        c.addLayout(row(*self.extrude_buttons))
+        self.filament_buttons = {}
+        for keys in (('load', 'unload'), ('load_all', 'unload_all')):
+            widgets = []
+            for key in keys:
+                widget = button({'load': 'Load', 'unload': 'Unload',
+                                 'load_all': 'Load All', 'unload_all': 'Unload All'}[key],
+                                lambda checked=False, action=key: self.run_filament_macro(action))
+                widget.hide()
+                widget.setEnabled(False)
+                self.filament_buttons[key] = widget
+                widgets.append(widget)
+            c.addLayout(row(*widgets))
+        self.filament_status = label('', 'caption')
+        self.filament_status.hide()
+        c.addWidget(self.filament_status)
         l.addWidget(f)
 
     def make_temperatures(self, l):
@@ -4930,10 +5036,13 @@ class Screen(QWidget):
             if QMessageBox.question(self, 'Home axes', 'Home all axes (G28)?', QMessageBox.Yes | QMessageBox.No, QMessageBox.No) == QMessageBox.Yes and self.live_print_state() is not None and host_shutdown_allowed(self._live_status):
                 self.request_toolhead_action('G28', already_confirmed=True)
         elif key == 'cooldown':
+            if self._toolhead_pending:
+                warn(self, 'Cooldown', 'Motion request in progress')
+                return
             if not host_shutdown_allowed(self._live_status) or self.live_print_state() is None:
                 warn(self, 'Cooldown', 'Cooldown is available only when the printer is confirmed idle.')
                 return
-            if QMessageBox.question(self, 'Cooldown', 'Turn off all heaters?', QMessageBox.Yes | QMessageBox.No, QMessageBox.No) == QMessageBox.Yes and self.live_print_state() is not None and host_shutdown_allowed(self._live_status):
+            if QMessageBox.question(self, 'Cooldown', 'Turn off all heaters?', QMessageBox.Yes | QMessageBox.No, QMessageBox.No) == QMessageBox.Yes and self.live_print_state() is not None and host_shutdown_allowed(self._live_status) and not self._toolhead_pending:
                 self.network.script('TURN_OFF_HEATERS')
         elif key.startswith('macro:'):
             name = key[6:]
@@ -5527,12 +5636,12 @@ class Screen(QWidget):
         self.confirm_shutdown = bool(checked)
 
     def update_shutdown_button(self):
-        self.shutdown_button.setEnabled(self._shutdown_idle and not self._shutdown_pending)
+        self.shutdown_button.setEnabled(self._shutdown_idle and not self._shutdown_pending and not self._toolhead_pending)
 
     def request_host_shutdown(self):
         if self._shutdown_pending:
             return
-        if not self._shutdown_idle:
+        if not self._shutdown_idle or self._toolhead_pending:
             warn(self, 'Shutdown Host', 'Shutdown blocked: printer is not confirmed idle.')
             return
         if self.confirm_shutdown:
@@ -5541,7 +5650,7 @@ class Screen(QWidget):
                                     QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
                 return
         # Status can change while the modal confirmation is open. The worker also checks fresh data.
-        if not self._shutdown_idle or self._shutdown_pending:
+        if not self._shutdown_idle or self._shutdown_pending or self._toolhead_pending:
             return
         self._shutdown_pending = True
         self.update_shutdown_button()
@@ -5894,30 +6003,36 @@ class Screen(QWidget):
                 subtitle.setText(tr('Nur Sensor · keine Steuerung'))
 
     def update_discovered_tools(self, st):
-        detected = sorted([x for x in self.all_objects if x == 'extruder' or re.fullmatch(r'extruder\d+', x)],
-                          key=lambda x: (x != 'extruder', x))
-        if detected != [self.tool_selector.itemData(i) for i in range(self.tool_selector.count())]:
+        mapping = dict(config.items('tools')) if config.has_section('tools') else {}
+        discovered = discovered_tool_mapping(self.all_objects, mapping)
+        active = st.get('toolhead', {}).get('extruder')
+        if discovered != self._tool_mapping:
+            self._tool_mapping = discovered
+            selected = self.tool_selector.currentData() or active
+            if selected not in discovered.values():
+                selected = active
+            self.pa_spin.setProperty('velox_dirty', False)
             self.tool_selector.blockSignals(True)
-            selected = self.tool_selector.currentData()
             self.tool_selector.clear()
-            mapping = dict(config.items('tools')) if config.has_section('tools') else {}
-            if mapping:
-                for name, obj in mapping.items():
-                    if obj in detected:
-                        self.tool_selector.addItem(name + ' · ' + obj, obj)
-            else:
-                for i, obj in enumerate(detected):
-                    self.tool_selector.addItem('T' + str(i) + ' · ' + obj, obj)
-            for i in range(self.tool_selector.count()):
-                if self.tool_selector.itemData(i) == selected:
+            self._clear_layout(self.tool_button_grid)
+            self.tool_buttons = {}
+            for i, (name, obj) in enumerate(discovered.items()):
+                self.tool_selector.addItem(name + ' · ' + obj, obj)
+                widget = button(name, lambda checked=False, target=obj: self.select_tool(target))
+                self.tool_buttons[obj] = widget
+                columns = 2 if self.tiny else 4
+                self.tool_button_grid.addWidget(widget, i // columns, i % columns)
+                widget.setVisible(len(discovered) > 1)
+                if obj == selected:
                     self.tool_selector.setCurrentIndex(i)
             self.tool_selector.blockSignals(False)
-        active = st.get('toolhead', {}).get('extruder')
-        # Display actual active extruder; tool command T0/T1 is not assumed to exist.
-        selected = self.tool_selector.currentData() or active or 'extruder'
+            self.tool_selector.setVisible(len(discovered) <= 1)
+        selected = self.tool_selector.currentData() or active
         info = st.get(selected, {})
         cfg = st.get('configfile', {}).get('settings', {}).get(selected, {})
-        self.set_text('tool_info', f"Aktiver Extruder: {active}  ·  {selected}: {fmt(info.get('temperature'))} / {fmt(info.get('target'))} °C\nDüse: {cfg.get('nozzle_diameter','--')} mm  ·  PA: {fmt(info.get('pressure_advance'), 4)}")
+        tool = next((name for name, obj in discovered.items() if obj == selected), selected or '—')
+        self.set_text('tool_info', f"Aktiver Extruder: {active or '—'}  ·  {tool}: {fmt(info.get('temperature'))} / {fmt(info.get('target'))} °C\nDüse: {cfg.get('nozzle_diameter','--')} mm  ·  PA: {fmt(info.get('pressure_advance'), 4)}")
+        self.update_filament_controls(st)
         incoming_pa = fval(info.get('pressure_advance'))
         if self.pa_spin.property('velox_dirty'):
             if abs(self.pa_spin.value() - incoming_pa) < 0.00006:
@@ -5934,13 +6049,120 @@ class Screen(QWidget):
                 else:
                     spin.setValue(received)
 
+    def select_tool(self, extruder):
+        index = self.tool_selector.findData(extruder)
+        if index >= 0:
+            self.tool_selector.setCurrentIndex(index)
+
     def update_tool(self, _value=None):
-        # Selected tool means setting target extruder for PA; no automatic tool change.
+        # Selection alone never causes motion.
+        self.pa_spin.setProperty('velox_dirty', False)
+        self.update_discovered_tools(self._live_status)
         self.update_preset_highlights(self._temperature_status)
+
+    def selected_tool_macro(self):
+        extruder = self.tool_selector.currentData()
+        tool = next((name for name, obj in self._tool_mapping.items() if obj == extruder), '')
+        overrides = dict(config.items('tool_commands')) if config.has_section('tool_commands') else {}
+        return tool_change_command(self.all_objects, overrides, tool)
+
+    def filament_commands(self):
+        extruder = self.tool_selector.currentData() or ''
+        tool = next((name for name, obj in self._tool_mapping.items() if obj == extruder), '')
+        overrides = dict(config.items('filament_macros')) if config.has_section('filament_macros') else {}
+        return filament_macro_commands(self.all_objects, overrides, tool, extruder)
+
+    def filament_idle(self):
+        return (self.live_print_state() is not None and not self._toolhead_pending
+                and not self._file_start_pending and manual_motion_allowed(self._live_status))
+
+    def update_filament_controls(self, status):
+        if not hasattr(self, 'filament_buttons'):
+            return
+        ready = self.live_print_state() is not None
+        if not ready:
+            self.set_text('tool_info', 'Printer status unavailable')
+        idle = ready and self.filament_idle()
+        selected = self.tool_selector.currentData()
+        active = status.get('toolhead', {}).get('extruder') if ready else None
+        for name, obj in self._tool_mapping.items():
+            widget = self.tool_buttons[obj]
+            data = status.get(obj, {}) if ready else {}
+            state = heater_state(data)
+            suffix = {'heating': ' ↑', 'cooling': ' ↓', 'ready': ' ✓'}.get(state, '')
+            widget.setText(f"{name}{' · Active' if obj == active else ''}{' •' if obj == selected else ''}\n{fmt(data.get('temperature'), 0)} / {fmt(data.get('target'), 0)} °C{suffix}")
+            self.set_home_color(widget, 'homed' if obj == active else 'neutral')
+            widget.setEnabled(idle)
+        self.tool_selector.setEnabled(idle)
+        self.show_heater_target(self.selected_heating_status, status.get(selected, {}) if ready else {})
+        self.pa_spin.setEnabled(ready and not self._toolhead_pending and bool(selected))
+        self.pa_apply_button.setEnabled(ready and not self._toolhead_pending and bool(selected))
+        self.extrude_len.setEnabled(idle)
+        self.extrude_speed.setEnabled(idle)
+        tool, macro = self.selected_tool_macro()
+        self.activate_tool_button.setVisible(len(self._tool_mapping) > 1)
+        self.activate_tool_button.setText(tr('Activate selected tool'))
+        self.activate_tool_button.setEnabled(bool(idle and macro and selected != active))
+        self.tool_temperature_button.setEnabled(bool(idle and selected in self._tool_mapping.values()))
+        hot = (bool(selected and selected == active)
+               and fval(status.get(selected, {}).get('temperature')) >=
+               fval(status.get('configfile', {}).get('settings', {}).get(selected, {}).get('min_extrude_temp'), 170)
+               and status.get(selected, {}).get('can_extrude') is not False)
+        for widget in self.extrude_buttons:
+            widget.setEnabled(bool(idle and hot))
+        commands = self.filament_commands()
+        for action, widget in self.filament_buttons.items():
+            available = action in commands and (not action.endswith('_all') or len(self._tool_mapping) > 1)
+            widget.setVisible(available)
+            widget.setEnabled(bool(available and idle and (action.endswith('_all') or selected == active)))
+        text = ''
+        if self._toolhead_pending:
+            text = (tr('Motion not confirmed') if self._toolhead_uncertain else tr('Motion request in progress')) + ' · ' + self._toolhead_pending.splitlines()[0]
+        elif ready and selected and selected != active:
+            text = tr('Activate the selected tool before loading or unloading.')
+        elif not ready:
+            text = tr('Printer status unavailable')
+        elif self._toolhead_feedback:
+            text = self._toolhead_feedback
+        self.filament_status.setText(text)
+        self.filament_status.setVisible(bool(text))
+
+    def activate_selected_tool(self):
+        tool, macro = self.selected_tool_macro()
+        if self.filament_idle() and macro and self.tool_selector.currentData() != self._live_status.get('toolhead', {}).get('extruder'):
+            self.request_toolhead_action(tool, feature=macro)
+
+    def set_selected_tool_temperature(self):
+        selected = self.tool_selector.currentData()
+        if not self.filament_idle() or selected not in self._tool_mapping.values():
+            return
+        cfg = self._live_status.get('configfile', {}).get('settings', {}).get(selected, {})
+        maximum = fval(cfg.get('max_temp'), float('nan'))
+        if not math.isfinite(maximum) or maximum <= 1:
+            warn(self, 'Temperature', 'Waiting for Klipper heater limits.')
+            return
+        value, ok = TouchNumberDialog.get_value(self, 'Solltemperatur · ' + selected,
+                      fval(self._live_status.get(selected, {}).get('target')), 0, maximum - 1, 1)
+        if ok and self.filament_idle() and self.tool_selector.currentData() == selected and 0 <= value < maximum:
+            self.request_toolhead_action(f'SET_HEATER_TEMPERATURE HEATER={selected} TARGET={value:g}', feature=selected)
+
+    def run_filament_macro(self, action):
+        if not self.filament_idle():
+            return
+        selected = self.tool_selector.currentData()
+        command, macro = self.filament_commands().get(action, ('', ''))
+        if not command:
+            return
+        if action.endswith('_all'):
+            if len(self._tool_mapping) > 1:
+                self.request_toolhead_action(command, feature=macro)
+        elif selected and selected == self._live_status.get('toolhead', {}).get('extruder'):
+            self.request_toolhead_action(command, feature='active:' + selected + '|' + macro)
+
 
     def apply_pa(self):
         extr = self.tool_selector.currentData()
-        if extr:
+        if extr and not self._toolhead_pending and self.live_print_state() is not None:
             self.confirm_script(f'SET_PRESSURE_ADVANCE EXTRUDER={extr} ADVANCE={self.pa_spin.value():.4f}', 'Pressure Advance')
 
     def apply_retract(self):
@@ -5962,8 +6184,8 @@ class Screen(QWidget):
         self.apply_retract()
 
     def extrude(self, direction):
-        st = self.s
-        if st.get('print_stats', {}).get('state') in ('printing','paused'):
+        st = self._live_status
+        if not self.filament_idle():
             warn(self, 'Extrusion', 'Manuelles Extrudieren während Druck/Pause gesperrt.')
             return
         extr = self.tool_selector.currentData()
@@ -5983,7 +6205,7 @@ class Screen(QWidget):
             return
         amount = length * direction
         command = 'SAVE_GCODE_STATE NAME=VELOX_EXTRUDE\nM83\nG1 E{:.3f} F{:.0f}\nRESTORE_GCODE_STATE NAME=VELOX_EXTRUDE'.format(amount, speed*60)
-        self.confirm_script(command, ('Extrudieren' if direction > 0 else 'Zurückziehen') + f' {length} mm bei {speed} mm/s')
+        self.request_toolhead_action(command, feature='active:' + extr)
 
     def resolve_preset_targets(self, string, st):
         """Use identical tool/heater selection for commands and live preset highlighting."""
@@ -6340,6 +6562,9 @@ class Screen(QWidget):
                 text_on_button = glyph + ' ' + base if script == self._toolhead_pending and glyph else base
                 if widget.text() != text_on_button:
                     widget.setText(text_on_button)
+        if getattr(self, 'filament_status', None) is not None and self._toolhead_pending:
+            self.filament_status.setText(text)
+            self.filament_status.show()
         for widget in (self.toolhead_busy_label, self.dashboard_homing_status):
             widget.setText(text)
             widget.setVisible(bool(text))
@@ -6367,6 +6592,8 @@ class Screen(QWidget):
             b.setEnabled(ready and not busy and manual_motion_allowed(status))
             self.set_home_color(b, homing_visual_state(script, status, ready, busy))
         self.toolhead_hint.setText(tr('Manual movement requires an idle printer. Home axes before jogging.' if ready and not busy and manual_motion_allowed(status) else 'Manual movement unavailable'))
+        if hasattr(self, 'filament_buttons'):
+            self.update_filament_controls(status)
         self.animate_toolhead_busy()
 
     def toolhead_motion_result(self, script, accepted, message, uncertain):
@@ -6386,15 +6613,24 @@ class Screen(QWidget):
         if self._toolhead_pending or self.live_print_state() is None or not manual_motion_allowed(self._live_status, axes):
             warn(self, 'Toolhead', 'Manual movement unavailable')
             return
-        if feature and feature not in self.all_objects:
+        active_required, required = motion_requirements(feature)
+        if any(obj not in self.all_objects for obj in required):
+            return
+        if getattr(self, '_file_start_pending', False):
             return
         if self.confirm_enabled and not already_confirmed:
             if QMessageBox.question(self, tr('Toolhead'), script + '?', QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
                 return
         # A modal confirmation can outlive the idle state.
-        if self._toolhead_pending or self.live_print_state() is None or not manual_motion_allowed(self._live_status, axes):
+        if self._toolhead_pending or getattr(self, '_file_start_pending', False) or self.live_print_state() is None or not manual_motion_allowed(self._live_status, axes):
+            return
+        if any(obj not in self.all_objects for obj in required):
+            return
+        if active_required and self._live_status.get('toolhead', {}).get('extruder') != active_required:
             return
         self._toolhead_pending = script
+        self.update_shutdown_button()
+        self.update_file_controls(self._live_status)
         self._toolhead_uncertain = False
         self._toolhead_finished_at = 0.0
         self._toolhead_feedback = ''
@@ -6455,9 +6691,14 @@ class Screen(QWidget):
             self.console_input.clear()
 
     def confirm_script(self, script, title):
+        if self._toolhead_pending:
+            warn(self, title, 'Motion request in progress')
+            return False
         if self.confirm_enabled:
             if QMessageBox.question(self, tr(title), tr(f'{title} ausführen?\n\n{script[:500]}'), QMessageBox.Yes|QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
                 return False
+        if self._toolhead_pending:
+            return False
         self.log('>> ' + script.replace('\n',' | '))
         self.network.script(script)
         return True

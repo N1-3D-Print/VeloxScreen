@@ -6,11 +6,19 @@
 Responsive layout for small Raspberry Pi touchscreens (experimental 320 × 240 to 1024 × 600). No browser required.
 
 > [!WARNING]
-> **Early Alpha (v0.4.7)** — bugs and incomplete features are expected. Test printer controls carefully. Found an issue? **Please open a GitHub Issue!** Feedback and suggestions are welcome.
+> **Early Alpha (v0.4.8)** — bugs and incomplete features are expected. Test printer controls carefully. Found an issue? **Please open a GitHub Issue!** Feedback and suggestions are welcome.
 
-## What's new in v0.4.7 Alpha
+## What's new in v0.4.8 Alpha
 
-**Graphical Exclude Object** is the latest addition: select a part directly in the XY bed view, zoom to the occupied area with **Fit objects**, then confirm exclusion. The view uses Klipper's object polygons, with a named list for missing or overlapping geometry. Blue indicates selection, green indicates the current object and red hatching indicates excluded objects. Exclusion is permanent for the current job.
+**Multi-tool & filament management** expands the Tools page: discover numbered extruders, select a tool without motion, activate it via an existing configured macro, read individual temperatures and invoke discovered Load / Unload / Load All / Unload All macros. The blue tool is the active extruder reported by Klipper, not simply the selected one. Local tracked operations disable repeated tool/filament actions until completion and a fresh status poll. See [multi-tool setup](docs/MULTITOOL.md).
+
+![Multi-tool UI preview](screenshots/11_multitool.png)
+
+*Reconstructed v0.4.8 preview with simulated data and optional configured macros; not a native Qt capture.*
+
+### Previous update: v0.4.7
+
+**Graphical Exclude Object**: select a part directly in the XY bed view, zoom to the occupied area with **Fit objects**, then confirm exclusion. The view uses Klipper's object polygons, with a named list for missing or overlapping geometry. Blue indicates selection, green indicates the current object and red hatching indicates excluded objects. Exclusion is permanent for the current job.
 
 | Print monitor | Graphical Exclude Object |
 |:---:|:---:|
@@ -35,6 +43,7 @@ Responsive layout for small Raspberry Pi touchscreens (experimental 320 × 240 t
 | **Display comfort** | Idle dim/blank, keep-on-print, optional hardware backlight/DPMS, font/button sizing, startup page, dot cursor and slide-to-unlock cleaning lock. |
 | **Notifications** | Local optional history of up to 150 events, category filters and individual popup preferences. |
 | **Safety and recovery** | Fixed compact Emergency Stop on Dashboard and Print, original Klipper fault text, confirmed firmware restart / Klipper restart / host reboot, separately guarded host shutdown. |
+| **Multi-tool / filament** | Automatic extruder discovery, explicit tool activation, individual targets, existing filament macros and guarded operations. |
 | **Other controls** | Extrusion, pressure advance, firmware retract, bed mesh, G-code console, LED effects, macro visibility, experimental NetworkManager Wi-Fi. |
 
 ### Object exclusion requirements

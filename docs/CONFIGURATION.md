@@ -18,6 +18,8 @@ The app also supports a legacy `veloxscreen.conf` next to `main.py` as a fallbac
 | `[appearance]` | Name, font size, language and theme colors (`#RRGGBB`) |
 | `[extrusion]` | Extrusion lengths, speeds and axis jog steps |
 | `[tools]` | Optional manual T-to-extruder mapping |
+| `[tool_commands]` | Optional exact tool-change macro commands |
+| `[filament_macros]` | Optional exact filament macro commands / disable keys |
 | `[temperature_presets]` | Any number of hotend/bed/chamber presets |
 | `[macros]` | Optional quick macro commands |
 | `[layout]` | Custom block, navigation and item ordering; optional custom chamber-heater mapping |
@@ -146,3 +148,5 @@ No change required for supported standard probes or mechanical endstops. For a s
 `[display] cursor_style = dot` (default) uses a small white dot with a dark outline inside VeloxScreen, including Qt dialogs. `hidden` hides the cursor; `system` restores the normal OS pointer. Select the style in Settings → Display comfort, save, then restart VeloxScreen. The operating-system cursor theme is not changed.
 
 Dashboard and Print share a compact emergency stop fixed at the top right. Host shutdown moved to Settings → Service Control and retains its separate confirmation and idle checks.
+
+See [Multi-tool & filament management](MULTITOOL.md) for tool mapping, macro overrides and limitations.

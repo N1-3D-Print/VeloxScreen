@@ -16,7 +16,7 @@ from types import SimpleNamespace
 source = Path(__file__).resolve().parents[1] / 'main.py'
 tree = ast.parse(source.read_text())
 ns = dict(re=re, Z_STEPS=(.005,.01,.025,.05), math=math, posixpath=posixpath, urllib=urllib, time=time, datetime=datetime)
-helpers = {'fval','bounded_number','print_progress','remaining_seconds','duration_text','filament_grams','safe_thumbnail_path','host_shutdown_allowed','heater_state','matching_preset_state','ordered_items','live_z_value','z_single_tool','z_save_method','z_save_snapshot','z_snapshot_matches'}
+helpers = {'motion_requirements','fval','bounded_number','print_progress','remaining_seconds','duration_text','filament_grams','safe_thumbnail_path','host_shutdown_allowed','heater_state','matching_preset_state','ordered_items','live_z_value','z_single_tool','z_save_method','z_save_snapshot','z_snapshot_matches'}
 exec(compile(ast.Module(body=[n for n in tree.body if isinstance(n,ast.FunctionDef) and n.name in helpers],type_ignores=[]),str(source),'exec'),ns)
 
 def get_method(cls, name, globals_=None):

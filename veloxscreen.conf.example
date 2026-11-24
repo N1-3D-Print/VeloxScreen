@@ -38,6 +38,20 @@ speed_z = 10
 # T0 = extruder
 # T1 = extruder1
 
+[tool_commands]
+# Optional overrides for existing tool-change macros (no automatic ACTIVATE_EXTRUDER).
+# T0 = PICK_TOOL TOOL=0
+# T1 = PICK_TOOL TOOL=1
+
+[filament_macros]
+# Optional exact commands for existing Klipper macros; omit keys for auto-detection.
+# Use {tool} for the selected T label and {extruder} for the Klipper object.
+# Empty values disable that button. Verify actual macro parameters before use.
+# load = LOAD_FILAMENT
+# unload = UNLOAD_FILAMENT
+# load_all = LOAD_ALL
+# unload_all = UNLOAD_ALL
+
 [temperature_presets]
 PLA = nozzle:210, bed:60
 PETG = nozzle:240, bed:80

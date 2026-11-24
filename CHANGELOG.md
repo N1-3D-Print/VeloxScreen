@@ -1,3 +1,11 @@
+## v0.4.8-alpha — Multi-tool & filament management
+
+- Detect numbered extruder objects without a four-tool limit, preserve numeric IDs and support explicit `[tools]` and `[tool_commands]` mappings. Distinguish selection from the active extruder reported by Klipper; selecting a tile never moves the printer. Activate through a discovered macro, not raw ACTIVATE_EXTRUDER.
+- Show current and target temperatures for every tool, with selected heater state and editable target limited by Klipper configuration. Keep PA and firmware retraction controls. Use two tool columns on tiny displays.
+- Resolve existing filament macros automatically or via `[filament_macros]` exact command overrides with optional `{tool}` and `{extruder}` placeholders. All-tool buttons require multiple extruders and an existing all-tool macro. Never generate filament motion from macro names alone. Single-tool actions require the selected tool to be active.
+- Use the existing FIFO/guarded motion path, recheck ready/idle status, required macro and active extruder before dispatch, wait for command and M400, and extend macro request timeout to 900 seconds. No automatic retry after uncertain responses. Local tracked operations block manual toolhead/filament actions, normal confirmed G-code submission, file start and host shutdown. Other clients and asynchronous/delayed printer macros are not interlocked.
+- 51 dependency-free tests passed; native Qt and connected-printer validation remain pending. U1-specific UNLOAD_ALL macro is not included: current printer backup is required to verify existing unload and parking behavior. No mandatory config migration.
+
 ## v0.4.7-alpha — Graphical Exclude Object
 
 - Add a touch-selectable XY bed map to the existing Print / Exclude Object dialog. Draw real Klipper object polygons at equal X/Y scale, with Y increasing upwards, and show selection (blue), current object (green) and excluded objects (red hatch). Selection does not issue a command.

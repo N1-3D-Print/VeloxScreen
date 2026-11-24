@@ -1,4 +1,4 @@
-# VeloxScreen v0.4.7 Alpha — UI previews
+# VeloxScreen Alpha — UI previews
 
 These 1024 × 600 layout reconstructions use the actual v0.4.7 source structure, controls and default palette with simulated printer data and illustrative thumbnails. They are **not native Qt screenshots or connected-printer captures**. Exact dimensions and scrolling vary by device and configuration.
 
@@ -64,3 +64,9 @@ Slide-to-unlock touch cleaning mode.
 
 ![Cleaning Lock reconstructed UI preview](10_cleaning_lock.png)
 
+
+## Multi-tool & filament management (v0.4.8)
+
+Reconstructed Tools page with simulated four-tool data, an active T1, and example detected Load/Unload All macros. The Extrusion block is placed above Firmware Retract using the existing layout editor. Not a native Qt capture.
+
+![Multi-tool reconstructed UI preview](11_multitool.png)
