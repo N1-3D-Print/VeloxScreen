@@ -165,6 +165,29 @@ def host_shutdown_allowed(status):
     return state in ('standby', 'complete', 'cancelled', 'error') and active is False
 
 
+def toolhead_coordinates(status):
+    """Commanded G-code and machine coordinates, not physical encoder feedback."""
+    gm = status.get('gcode_move', {})
+    th = status.get('toolhead', {})
+    def coordinate(values, index):
+        if not isinstance(values, (tuple, list)) or len(values) <= index:
+            return None
+        value = fval(values[index], float('nan'))
+        return value if math.isfinite(value) else None
+    machine = gm.get('position', th.get('position'))
+    homed = th.get('homed_axes', '')
+    return {axis: (coordinate(gm.get('gcode_position'), i), coordinate(machine, i),
+                   axis.lower() in homed if isinstance(homed, str) else False)
+            for i, axis in enumerate('XYZ')}
+
+
+def manual_motion_allowed(status, axes=''):
+    homed = status.get('toolhead', {}).get('homed_axes', '')
+    return (host_shutdown_allowed(status)
+            and status.get('pause_resume', {}).get('is_paused') is not True
+            and isinstance(homed, str) and all(a in homed for a in axes))
+
+
 Z_STEPS = (.005, .01, .025, .05)
 
 
@@ -335,11 +358,11 @@ class Network(QObject):
         self._script_cv = threading.Condition()
         threading.Thread(target=self._script_worker, daemon=True).start()
 
-    def call(self, path, method='GET', payload=None):
+    def call(self, path, method='GET', payload=None, timeout=3):
         url = self.url + path
         body = urllib.parse.urlencode(payload).encode('utf-8') if payload is not None else None
         req = urllib.request.Request(url, data=body, method=method)
-        with urllib.request.urlopen(req, timeout=3) as r:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
             raw = r.read().decode('utf-8')
             return json.loads(raw) if raw else {}
 
@@ -375,7 +398,7 @@ class Network(QObject):
                 requested = [x for x in self.objects if x in (
                     'toolhead', 'motion_report', 'gcode_move', 'print_stats',
                     'virtual_sdcard', 'heaters', 'bed_mesh',
-                    'firmware_retraction', 'configfile', 'display_status')
+                    'firmware_retraction', 'configfile', 'display_status', 'pause_resume')
                     or x == 'extruder' or re.fullmatch(r'extruder\d+', x)
                     or x == 'heater_bed' or x.startswith(('temperature_sensor ', 'heater_generic ',
                                                           'temperature_fan ', 'fan_generic ', 'heater_fan '))
@@ -585,6 +608,8 @@ class Network(QObject):
             # Commands are absolute targets: when tapped rapidly, only the
             # latest queued fan/M220/M221 target for that channel is needed.
             def coalesce_key(command):
+                if not isinstance(command, str):
+                    return None
                 if re.fullmatch(r'M220 S[0-9]+', command):
                     return 'speed-override'
                 if re.fullmatch(r'M221 S[0-9]+', command):
@@ -600,6 +625,30 @@ class Network(QObject):
                                       if coalesce_key(cmd) != key] + [script]
             self._script_cv.notify()
 
+    def manual_motion(self, script, axes='', required_object=''):
+        # Same FIFO as other G-code. Recheck immediately before dispatch, not just on tap.
+        with self._script_cv:
+            self._script_queue.append((script, axes, required_object))
+            self._script_cv.notify()
+
+    def run_manual_motion(self, script, axes, required_object):
+        health = self.call('/printer/info').get('result', {})
+        if health.get('state') != 'ready':
+            raise RuntimeError('Klipper is not ready; motion blocked.')
+        if required_object:
+            objects = self.call('/printer/objects/list').get('result', {}).get('objects', [])
+            if required_object not in objects:
+                raise RuntimeError('Calibration feature is no longer available.')
+        query = '/printer/objects/query?print_stats&virtual_sdcard&toolhead'
+        if 'pause_resume' in self.objects:
+            query += '&pause_resume'
+        status = self.call(query).get('result', {}).get('status', {})
+        if not manual_motion_allowed(status, axes):
+            raise RuntimeError('Manual motion blocked: printer is not confirmed idle or required axes are not homed.')
+        # Homing and gantry calibration can take longer than the normal HTTP timeout.
+        # Never retry a timed-out command automatically.
+        return self.call('/printer/gcode/script', 'POST', {'script': script}, timeout=120)
+
     def _script_worker(self):
         while True:
             with self._script_cv:
@@ -607,7 +656,11 @@ class Network(QObject):
                     self._script_cv.wait()
                 script = self._script_queue.pop(0)
             try:
-                response = self.call('/printer/gcode/script', 'POST', {'script': script})
+                if isinstance(script, tuple):
+                    script, axes, required_object = script
+                    response = self.run_manual_motion(script, axes, required_object)
+                else:
+                    response = self.call('/printer/gcode/script', 'POST', {'script': script})
                 # Do not flood the console with every intermediate slider value.
                 if not script.startswith(('M106 S', 'SET_FAN_SPEED FAN=')):
                     self.reply.emit('OK  ' + script.replace('\n', ' | ') + '  ' + str(response.get('result', '')))
@@ -755,6 +808,11 @@ _I18N = [
 _I18N.sort(key=lambda p: len(p[0]), reverse=True)
 
 _ADDED_EN_DE = {
+    ('Toolhead', 'Druckkopf'), ('G-code position · mm', 'G-Code-Position · mm'),
+    ('Machine', 'Maschine'), ('Not homed', 'Nicht referenziert'), ('Homed', 'Referenziert'),
+    ('Step · mm', 'Schrittweite · mm'), ('Home all', 'Alle referenzieren'), ('Home XY', 'XY referenzieren'),
+    ('Manual movement unavailable', 'Manuelle Bewegung nicht verfügbar'),
+    ('Manual movement requires an idle printer. Home axes before jogging.', 'Manuelle Bewegung nur im Leerlauf. Achsen vorher referenzieren.'),
     ('TIME REMAINING', 'RESTZEIT'), ('FINISH AT · EST.', 'FERTIG UM · CA.'),
     ('Display comfort', 'Display-Komfort'), ('Quick actions', 'Schnellzugriffe'),
     ('Choose quick actions', 'Schnellzugriffe wählen'), ('Notification center', 'Mitteilungszentrale'),
@@ -2554,7 +2612,7 @@ class Screen(QWidget):
             self.pages[name] = self._page(name, builder)
             self.stack.addWidget(self.pages[name])
         nav_layout.addStretch()
-        sl.addWidget(label('v0.4.3 alpha', 'caption'))
+        sl.addWidget(label('v0.4.4 alpha', 'caption'))
         # IMPORTANT: Qt otherwise deletes self.connection and all nav buttons.
         outer.addWidget(sidebar)
         sidebar.setVisible(not self.compact)
@@ -3208,6 +3266,7 @@ class Screen(QWidget):
             self._heating_previous.clear()
             self._sensor_previous.clear()
             self.update_job_controls({})
+            self.update_toolhead_control({})
             self.remaining_label.setText('—')
             self.eta_label.setText('—')
             self.print_estimate_info.setText('Printer status unavailable')
@@ -3501,26 +3560,69 @@ class Screen(QWidget):
     def make_control(self, l):
         root = l
         l = self.layout_block('control_order', root, 'jog', 'Manual movement / Jog')
-        f, c = card('Achsensteuerung')
+        f, c = card('Toolhead')
+        c.addWidget(label('G-code position · mm', 'caption'))
+        positions = QGridLayout()
+        positions.setSpacing(5)
+        self.toolhead_position_labels = {}
+        for i, axis in enumerate('XYZ'):
+            tile = QVBoxLayout()
+            tile.setSpacing(3)
+            name = label(axis + ' · —', 'caption')
+            value = label('—', 'metricSmall' if self.tiny else 'metric')
+            value.setAlignment(Qt.AlignCenter)
+            value.setWordWrap(False)
+            machine = label('—', 'caption')
+            machine.setAlignment(Qt.AlignCenter)
+            tile.addWidget(name)
+            tile.addWidget(value)
+            tile.addWidget(machine)
+            positions.addLayout(tile, 0, i)
+            positions.setColumnStretch(i, 1)
+            self.toolhead_position_labels[axis] = (name, value, machine)
+        c.addLayout(positions)
         self.jog_step = QComboBox()
         self.jog_step.addItems([str(int(v)) if int(v)==v else str(v) for v in options('extrusion', 'jog_steps', '1, 5, 15, 25, 50')])
-        c.addLayout(row(label('Schrittweite mm'), self.jog_step))
-        grid = QGridLayout()
-        for text, axis, direction, xx, yy in [('Y+', 'Y', 1, 1, 0), ('X-', 'X', -1, 0, 1),
-                                              ('X+', 'X', 1, 2, 1), ('Y-', 'Y', -1, 1, 2),
-                                              ('Z+', 'Z', 1, 3, 0), ('Z-', 'Z', -1, 3, 2)]:
-            grid.addWidget(button(text, partial(self.jog, axis, direction)), yy, xx)
-        c.addLayout(grid)
-        self.s['position'] = label('Position X/Y/Z: --', 'readout')
-        c.addWidget(self.s['position'])
-        motor_row = QHBoxLayout()
-        motor_row.addWidget(label('Disables all stepper motors. Rehome axes before moving again.', 'caption'), 1)
-        control_motor_button = button('Motors Off', self.motors_off)
-        control_motor_button.setMinimumWidth(108)
+        c.addLayout(row(label('Step · mm'), self.jog_step))
+        self.toolhead_jog_buttons = {}
+        self.toolhead_action_buttons = {}
+        movement = QGridLayout()
+        movement.setSpacing(5)
+        for text, axis, direction, xx, yy in [('↑ Y+', 'Y', 1, 1, 0), ('← X−', 'X', -1, 0, 1),
+                                              ('X+ →', 'X', 1, 2, 1), ('↓ Y−', 'Y', -1, 1, 2),
+                                              ('↑ Z+', 'Z', 1, 3, 0), ('↓ Z−', 'Z', -1, 3, 2)]:
+            b = button(text, partial(self.jog, axis, direction))
+            b.setEnabled(False)
+            self.toolhead_jog_buttons[(axis, direction)] = b
+            movement.addWidget(b, yy, xx)
+        for col in range(4):
+            movement.setColumnStretch(col, 1)
+        homing = QGridLayout()
+        homing.setSpacing(5)
+        def add_action(text, script, r, col, span=1, axes='', feature=''):
+            b = button(text, partial(self.request_toolhead_action, script, axes, feature), True)
+            b.setEnabled(False)
+            if feature:
+                b.hide()
+            homing.addWidget(b, r, col, 1, span)
+            self.toolhead_action_buttons[script] = (b, axes, feature)
+        add_action('Home all', 'G28', 0, 0, 3)
+        for i, axis in enumerate('XYZ'):
+            add_action(axis, 'G28 ' + axis, 1, i)
+        add_action('Home XY', 'G28 X Y', 2, 0, 3)
+        add_action('Z-Tilt', 'Z_TILT_ADJUST', 3, 0, 3, 'xyz', 'z_tilt')
+        add_action('QGL', 'QUAD_GANTRY_LEVEL', 4, 0, 3, 'xyz', 'quad_gantry_level')
+        controls = QVBoxLayout() if self.tiny or self.width() < 620 else QHBoxLayout()
+        controls.setSpacing(7)
+        controls.addLayout(movement, 1)
+        controls.addLayout(homing, 1)
+        c.addLayout(controls)
+        self.toolhead_hint = label('Manual movement unavailable', 'caption')
+        c.addWidget(self.toolhead_hint)
+        control_motor_button = button('Motors Off', partial(self.request_toolhead_action, 'M84', '', ''))
         control_motor_button.setEnabled(False)
-        self.motor_off_buttons.append(control_motor_button)
-        motor_row.addWidget(control_motor_button)
-        c.addLayout(motor_row)
+        self.toolhead_action_buttons['M84'] = (control_motor_button, '', '')
+        c.addWidget(control_motor_button)
         l.addWidget(f)
         l = self.layout_block('control_order', root, 'overrides', 'Speed / Flow Overrides')
         l.addWidget(label('Speed / Flow Overrides', 'caption'))
@@ -4957,6 +5059,7 @@ class Screen(QWidget):
         self._heating_previous.clear()
         self._sensor_previous.clear()
         self.update_job_controls({})
+        self.update_toolhead_control({})
         self.remaining_label.setText('—')
         self.eta_label.setText('—')
         self.print_estimate_info.setText('Status unavailable')
@@ -5050,7 +5153,7 @@ class Screen(QWidget):
         self.set_text('homed', 'Referenziert: ' + (axes.upper() if axes else 'keine Achse'))
         gm = st.get('gcode_move', {})
         self.update_overrides(gm)
-        self.set_text('position', 'Position X/Y/Z: ' + ', '.join(fmt(x,2) for x in gm.get('gcode_position', [])[:3]))
+        self.update_toolhead_control(st)
         self.update_dashboard_temperatures(st)
         self.update_discovered_tools(st)
         self.update_temps(st)
@@ -5537,19 +5640,48 @@ class Screen(QWidget):
             label_widget.setText('● Active' if active else '○ Inactive')
             label_widget.setStyleSheet('color: #59d9a1;' if active else 'color: #9eadc2;')
 
-    def jog(self, axis, direction):
-        if self.s.get('print_stats', {}).get('state') in ('printing', 'paused'):
-            warn(self, 'Achsen', 'Bewegung während Druck/Pause gesperrt.')
+    def update_toolhead_control(self, status):
+        ready = self._health_state == 'ready' and self.live_print_state() is not None
+        visible_status = status if ready else {}
+        coords = toolhead_coordinates(visible_status)
+        for axis, (name, value, machine) in self.toolhead_position_labels.items():
+            pos, physical, homed = coords[axis]
+            digits = 3 if axis == 'Z' else 2
+            name.setText(axis + ' · ' + tr('Homed' if homed else 'Not homed') if ready else axis + ' · —')
+            value.setText(fmt(pos, digits) if pos is not None else '—')
+            machine.setText(tr('Machine') + ' ' + fmt(physical, digits) if physical is not None else '—')
+        for (axis, _), b in self.toolhead_jog_buttons.items():
+            b.setEnabled(ready and manual_motion_allowed(status, axis.lower()))
+        for b, axes, feature in self.toolhead_action_buttons.values():
+            supported = not feature or feature in self.all_objects
+            b.setVisible(supported)
+            b.setEnabled(ready and supported and manual_motion_allowed(status, axes))
+        self.toolhead_hint.setText(tr('Manual movement requires an idle printer. Home axes before jogging.' if ready and manual_motion_allowed(status) else 'Manual movement unavailable'))
+
+    def request_toolhead_action(self, script, axes='', feature=''):
+        if self.live_print_state() is None or not manual_motion_allowed(self._live_status, axes):
+            warn(self, 'Toolhead', 'Manual movement unavailable')
             return
-        if axis.lower() not in self.s.get('toolhead', {}).get('homed_axes', ''):
-            warn(self, 'Achsen', 'Achse ist nicht referenziert.')
+        if feature and feature not in self.all_objects:
+            return
+        if self.confirm_enabled:
+            if QMessageBox.question(self, tr('Toolhead'), script + '?', QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
+                return
+        self.network.manual_motion(script, axes, feature)
+        self.log('>> ' + script)
+
+    def jog(self, axis, direction):
+        if self.live_print_state() is None or not manual_motion_allowed(self._live_status, axis.lower()):
+            warn(self, 'Toolhead', 'Manual movement unavailable')
             return
         dist = fval(self.jog_step.currentText()) * direction
         if self.jog_invert.get(axis, False):
             dist = -dist
         # G-code F is mm/min; UI displays mm/s.
         feed = round(self.jog_speed.get(axis, 10.0 if axis == 'Z' else 100.0) * 60, 3)
-        self.network.script(f'SAVE_GCODE_STATE NAME=VELOX_JOG\nG91\nG1 {axis}{dist:g} F{feed:g}\nRESTORE_GCODE_STATE NAME=VELOX_JOG')
+        if not math.isfinite(dist) or not math.isfinite(feed) or not dist or feed <= 0:
+            return
+        self.network.manual_motion(f'SAVE_GCODE_STATE NAME=VELOX_JOG\nG91\nG1 {axis}{dist:g} F{feed:g}\nRESTORE_GCODE_STATE NAME=VELOX_JOG', axis.lower())
         self.log(f'>> Jog {axis} {dist:+g} mm')
 
     def update_calib(self, st):

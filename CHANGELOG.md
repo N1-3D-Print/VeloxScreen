@@ -1,3 +1,10 @@
+## v0.4.4-alpha — Unified Toolhead control
+
+- Combine XYZ G-code coordinates, machine coordinates and per-axis homed status with XY/Z jog, step size, Home all/XY/X/Y/Z and Motors Off in the existing reorderable Control jog block. Coordinates are reported commanded positions, not encoder measurements; clear stale values on a fault or connection error.
+- Show Z-Tilt and QGL only when their Klipper objects are discovered; require homed XYZ for these calibration actions. Use existing jog direction/speed settings and theme styles. Stack controls on narrow displays.
+- Require a fresh ready/idle status before dispatching Control manual movement, and relevant homed axes for jog. Recheck optional calibration availability; use the existing FIFO and never automatically retry timed-out commands. Klipper remains responsible for movement limits. No config migration.
+- Native Qt and hardware testing pending.
+
 ## v0.4.3-alpha — Compact Print emergency stop
 
 - Use one shared fixed top-right Emergency Stop header on Dashboard and Print; remove the full-width Print stop bar and M112 suffix from the button label.
