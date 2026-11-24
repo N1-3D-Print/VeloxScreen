@@ -10,6 +10,10 @@ import re
 import sys
 import time
 import threading
+import datetime
+import posixpath
+import shutil
+import subprocess
 import wifi_manager
 import urllib.error
 import urllib.parse
@@ -17,13 +21,13 @@ import urllib.request
 from pathlib import Path
 from functools import partial
 
-from PyQt5.QtCore import Qt, QTimer, QObject, pyqtSignal, QRect, QEasingCurve, QPropertyAnimation
+from PyQt5.QtCore import Qt, QTimer, QObject, pyqtSignal, QRect, QRectF, QEvent, QEasingCurve, QPropertyAnimation
 from PyQt5.QtGui import QFont, QPainter, QColor, QPen, QPixmap, QLinearGradient, QBrush
 from PyQt5.QtWidgets import (
     QApplication, QWidget, QLabel, QPushButton, QVBoxLayout, QHBoxLayout,
     QScrollArea, QFrame, QGridLayout, QStackedWidget, QComboBox, QDoubleSpinBox, QCheckBox,
     QLineEdit, QPlainTextEdit, QMessageBox, QInputDialog, QSplitter, QSizePolicy, QDialog, QScroller, QScrollerProperties, QSlider,
-    QGraphicsOpacityEffect, QListWidget, QListWidgetItem, QAbstractItemView
+    QGraphicsOpacityEffect, QListWidget, QListWidgetItem, QAbstractItemView, QProgressBar
 )
 
 BASE = Path(__file__).resolve().parent
@@ -116,11 +120,190 @@ def fval(v, fallback=0.0):
         return fallback
 
 
+def heater_state(data):
+    """Classify live temperature versus target, not instantaneous PWM output."""
+    target = fval(data.get('target'), float('nan'))
+    actual = fval(data.get('temperature'), float('nan'))
+    if not math.isfinite(target) or target < 0:
+        return 'unknown'
+    if target == 0:
+        return 'off'
+    if not math.isfinite(actual):
+        return 'unknown'
+    if actual < target - 2.0:
+        return 'heating'
+    if actual > target + 2.0:
+        return 'cooling'
+    return 'ready'
+
+
+def matching_preset_state(targets, status):
+    """A preset is active only when all applicable targets are confirmed live."""
+    if not targets or not any(value > 0 for value in targets.values()):
+        return 'off'
+    states = []
+    for heater, expected in targets.items():
+        entry = status.get(heater, {})
+        actual_target = fval(entry.get('target'), float('nan'))
+        if not math.isfinite(actual_target) or abs(actual_target - expected) > 0.01:
+            return 'off'
+        state = heater_state(entry)
+        if state == 'unknown':
+            return 'off'
+        states.append(state)
+    if 'heating' in states:
+        return 'heating'
+    if 'cooling' in states:
+        return 'cooling'
+    return 'ready'
+
+
 def host_shutdown_allowed(status):
     """Only permit an explicitly known idle/non-printing virtual SD state."""
     state = status.get('print_stats', {}).get('state')
     active = status.get('virtual_sdcard', {}).get('is_active')
     return state in ('standby', 'complete', 'cancelled', 'error') and active is False
+
+
+Z_STEPS = (.005, .01, .025, .05)
+
+
+def live_z_value(status):
+    origin = status.get('gcode_move', {}).get('homing_origin')
+    if isinstance(origin, (list, tuple)) and len(origin) >= 3:
+        z = fval(origin[2], float('nan'))
+        if math.isfinite(z):
+            return z
+    return None
+
+
+def z_single_tool(status):
+    cfg = status.get('configfile', {}).get('settings', {})
+    return ('extruder' in cfg and status.get('toolhead', {}).get('extruder') == 'extruder'
+            and not any(re.fullmatch(r'extruder[1-9]\d*', k) or k.startswith(('dual_carriage', 'tool ', 'toolchanger')) for k in cfg))
+
+
+def z_save_method(status, eddy_method=''):
+    """Fail closed for ambiguous tool offsets, homing configurations and overridden commands."""
+    cfg = status.get('configfile', {}).get('settings', {})
+    if not z_single_tool(status):
+        return None, 'Multi-tool or unknown tool setup: use your tool-specific calibration workflow.'
+    if any(k.lower() in ('gcode_macro z_offset_apply_probe', 'gcode_macro z_offset_apply_endstop', 'gcode_macro save_config') for k in cfg):
+        return None, 'Custom offset/save macros detected. Use the printer-specific workflow.'
+    zcfg = cfg.get('stepper_z', {})
+    pin = str(zcfg.get('endstop_pin') or '').strip().lstrip('^~!')
+    if not pin:
+        return None, 'Unknown Z endstop configuration.'
+    if ':' in pin and pin.endswith('virtual_endstop'):
+        if pin != 'probe:z_virtual_endstop':
+            return None, 'Unknown virtual Z endstop.'
+        eddy = [k for k in cfg if k.startswith('probe_eddy_current ')]
+        if eddy:
+            if len(eddy) != 1 or eddy_method not in ('scan', 'tap') or any(k in cfg for k in ('probe', 'bltouch', 'cartographer', 'scanner')):
+                return None, 'Eddy: select scan or tap in the babystep configuration after verifying your firmware.'
+            return ('Z_OFFSET_APPLY_PROBE METHOD=tap' if eddy_method == 'tap' else 'Z_OFFSET_APPLY_PROBE'), 'Eddy ' + eddy_method
+        known = [k for k in ('probe', 'bltouch', 'cartographer', 'scanner', 'smart_effector') if k in cfg]
+        if len(known) != 1 or known[0] == 'scanner':
+            return None, 'Probe calibration method not unambiguously recognized.'
+        if known[0] == 'cartographer' and str(cfg['cartographer'].get('register_as_probe', True)).lower() in ('false','0','no'):
+            return None, 'Cartographer is not registered as the Z probe.'
+        return 'Z_OFFSET_APPLY_PROBE', known[0]
+    if 'virtual' in pin.lower() or not math.isfinite(fval(zcfg.get('position_endstop'), float('nan'))):
+        return None, 'Unknown physical Z endstop calibration.'
+    if 'homing_override' in cfg:
+        return None, 'Custom Z homing: verify the printer-specific calibration method.'
+    return 'Z_OFFSET_APPLY_ENDSTOP', 'Physical Z endstop'
+
+
+def z_save_snapshot(status, eddy_method=''):
+    z = live_z_value(status)
+    command, reason = z_save_method(status, eddy_method)
+    if not command:
+        return None, reason
+    if z is None or abs(z) < .0005 or abs(z) > .5:
+        return None, 'A nonzero live Z offset of at most 0.5 mm is required.'
+    if status.get('configfile', {}).get('save_config_pending') is not False:
+        return None, 'Existing or unknown pending SAVE_CONFIG changes. Resolve them first.'
+    return {'z': z, 'command': command, 'method': reason,
+            'filename': status.get('print_stats', {}).get('filename'),
+            'tool': status.get('toolhead', {}).get('extruder'),
+            'duration': fval(status.get('print_stats', {}).get('total_duration'), 0)}, ''
+
+
+def z_snapshot_matches(a, b):
+    return bool(a and b and all(a.get(k) == b.get(k) for k in ('command','method','filename','tool'))
+                and abs(a['z'] - b['z']) < .0001)
+
+
+def bounded_number(value, default, minimum, maximum):
+    v = fval(value, default)
+    return max(minimum, min(maximum, v if math.isfinite(v) else default))
+
+
+def flag(section, key, default=True):
+    return conf(section, key, str(default)).strip().lower() in ('true', 'yes', '1', 'on')
+
+
+def print_progress(status):
+    raw = status.get('display_status', {}).get('progress')
+    if raw is None or not math.isfinite(fval(raw, float('nan'))):
+        raw = status.get('virtual_sdcard', {}).get('progress')
+    return bounded_number(raw, 0, 0, 1)
+
+
+def remaining_seconds(progress, elapsed, estimated):
+    """Blend initial slicer estimate and observed progress. Not a completion guarantee."""
+    progress = bounded_number(progress, 0, 0, 1)
+    elapsed = bounded_number(elapsed, 0, 0, 1e9)
+    estimated = bounded_number(estimated, 0, 0, 1e9)
+    if progress >= 1:
+        return 0.0
+    model = estimated * (1 - progress) if estimated > 0 else None
+    observed = elapsed / progress * (1 - progress) if progress >= .02 and elapsed >= 10 else None
+    if observed is None:
+        return model
+    if model is None:
+        return observed
+    weight = min(1.0, max(0.0, (progress - .02) / .28))
+    return model * (1 - weight) + observed * weight
+
+
+def duration_text(seconds):
+    if seconds is None or not math.isfinite(seconds) or seconds < 0:
+        return '—'
+    m = int(math.ceil(seconds / 60))
+    h, m = divmod(m, 60)
+    d, h = divmod(h, 24)
+    if d:
+        return f'{d}d {h:02d}h {m:02d}m'
+    return f'{h:02d}h {m:02d}m'
+
+
+def filament_grams(length_mm, diameter, density):
+    if not all(math.isfinite(v) and v > 0 for v in (diameter, density)) or not math.isfinite(length_mm) or length_mm < 0:
+        return None
+    return length_mm * math.pi * (diameter / 2)**2 / 1000 * density
+
+
+def safe_thumbnail_path(filename, relative):
+    if not isinstance(relative, str) or not relative or relative.startswith('/') or '\\' in relative:
+        return None
+    if any(x == '..' for x in relative.split('/')):
+        return None
+    path = posixpath.normpath(posixpath.join(posixpath.dirname(filename), relative))
+    if path.startswith(('/', '../')) or path == '..':
+        return None
+    return '/server/files/gcodes/' + urllib.parse.quote(path, safe='/')
+
+
+def display_style(style, scale):
+    out = scaled_style(style, scale * bounded_number(conf('display', 'font_scale', '1'), 1, .8, 1.5))
+    factor = bounded_number(conf('display', 'button_scale', '1'), 1, .8, 1.5)
+    # Preserve the emergency button minimum size. Other explicit widget sizes remain valid.
+    out += f'\nQPushButton {{ min-height: {round(25*factor)}px; padding: {round(6*factor)}px {round(9*factor)}px; }}'
+    out += f'\nQPushButton#nav {{ min-height: {round(29*factor)}px; padding: {round(9*factor)}px 7px; }}'
+    return out
+
 
 
 class Network(QObject):
@@ -132,6 +315,10 @@ class Network(QObject):
     printer_health = pyqtSignal(object)
     recovery_result = pyqtSignal(str)
     shutdown_result = pyqtSignal(bool, str)
+    print_metadata = pyqtSignal(str, object, object)
+    print_action_result = pyqtSignal(str, bool, str)
+    live_z_result = pyqtSignal(bool, str)
+    z_save_result = pyqtSignal(bool, str)
 
     def __init__(self, url):
         super().__init__()
@@ -192,7 +379,7 @@ class Network(QObject):
                     or x == 'extruder' or re.fullmatch(r'extruder\d+', x)
                     or x == 'heater_bed' or x.startswith(('temperature_sensor ', 'heater_generic ',
                                                           'temperature_fan ', 'fan_generic ', 'heater_fan '))
-                    or x == 'fan' or x.startswith('led_effect ')]
+                    or x == 'fan' or x.startswith(('led_effect ', 'filament_switch_sensor ', 'filament_motion_sensor '))]
                 query = '&'.join(urllib.parse.quote(o, safe='') for o in requested)
                 payload = self.call('/printer/objects/query?' + query)
                 self._tick += 1
@@ -244,6 +431,97 @@ class Network(QObject):
             finally:
                 self._gcode_running = False
         threading.Thread(target=run, daemon=True).start()
+
+    def fetch_print_metadata(self, filename):
+        def work():
+            metadata, thumbnail = {}, b''
+            try:
+                metadata = self.call('/server/files/metadata?' + urllib.parse.urlencode({'filename': filename})).get('result', {})
+                if not isinstance(metadata, dict):
+                    metadata = {}
+                choices = [item for item in metadata.get('thumbnails', []) if isinstance(item, dict)]
+                # Prefer a compact thumbnail for small Pi displays; cap the download size.
+                choices.sort(key=lambda item: abs(fval(item.get('width'), 200) - 240))
+                for item in choices:
+                    path = safe_thumbnail_path(filename, item.get('relative_path'))
+                    if not path:
+                        continue
+                    try:
+                        with urllib.request.urlopen(self.url + path, timeout=3) as response:
+                            thumbnail = response.read(2 * 1024 * 1024 + 1)
+                        if len(thumbnail) <= 2 * 1024 * 1024:
+                            break
+                    except Exception:
+                        pass
+                    thumbnail = b''
+            except Exception:
+                pass
+            self.print_metadata.emit(filename, metadata, thumbnail)
+        threading.Thread(target=work, daemon=True).start()
+
+    def print_action(self, action):
+        """Separate confirmed user actions from the generic command queue."""
+        valid = {'pause': ('printing',), 'resume': ('paused',), 'cancel': ('printing', 'paused')}
+        if action not in valid:
+            return
+        def work():
+            try:
+                status = self.call('/printer/objects/query?print_stats').get('result', {}).get('status', {})
+                if status.get('print_stats', {}).get('state') not in valid[action]:
+                    raise RuntimeError('Print state changed; action not sent.')
+                self.call('/printer/print/' + action, 'POST')
+                self.print_action_result.emit(action, True, action.capitalize() + ' requested.')
+            except Exception as exc:
+                self.print_action_result.emit(action, False, str(exc))
+        threading.Thread(target=work, daemon=True).start()
+
+
+    def adjust_live_z(self, step, reset_expected=None):
+        if reset_expected is None and abs(step) not in Z_STEPS:
+            return
+        def work():
+            try:
+                status = self.call('/printer/objects/query?print_stats&toolhead&gcode_move&configfile').get('result', {}).get('status', {})
+                if status.get('print_stats', {}).get('state') != 'printing' or 'z' not in status.get('toolhead', {}).get('homed_axes', ''):
+                    raise RuntimeError('Printer is no longer actively printing with a homed Z axis.')
+                if reset_expected is not None:
+                    actual = live_z_value(status)
+                    if not z_single_tool(status) or actual is None or abs(actual) > .5 or abs(actual-reset_expected) >= .0001:
+                        raise RuntimeError('Z offset or tool setup changed; reset cancelled.')
+                    script = 'SET_GCODE_OFFSET Z=0 MOVE=1'
+                else:
+                    script = f'SET_GCODE_OFFSET Z_ADJUST={step:+.3f}'.rstrip('0').rstrip('.') + ' MOVE=1'
+                self.call('/printer/gcode/script', 'POST', {'script': script})
+                self.live_z_result.emit(True, 'Live Z adjustment accepted.')
+            except Exception as exc:
+                self.live_z_result.emit(False, 'Z adjustment not confirmed: ' + str(exc))
+        threading.Thread(target=work, daemon=True).start()
+
+    def save_live_z(self, expected, eddy_method=''):
+        """Recheck the live offset, method and idle status. Never auto-retry a save."""
+        def work():
+            attempted = False
+            try:
+                commands = self.call('/printer/gcode/help').get('result', {})
+                if expected['command'].split()[0] not in commands or 'SAVE_CONFIG' not in commands:
+                    raise RuntimeError('Required calibration commands are not advertised by Klipper.')
+                health = self.call('/printer/info').get('result', {})
+                if health.get('state') != 'ready':
+                    raise RuntimeError('Klipper is not ready.')
+                status = self.call('/printer/objects/query?print_stats&virtual_sdcard&toolhead&gcode_move&configfile&pause_resume').get('result', {}).get('status', {})
+                if (status.get('print_stats', {}).get('state') not in ('standby', 'complete')
+                        or not host_shutdown_allowed(status) or status.get('pause_resume', {}).get('is_paused') is True):
+                    raise RuntimeError('Printer is not confirmed idle after a successful print or in standby.')
+                current, reason = z_save_snapshot(status, eddy_method)
+                if not z_snapshot_matches(expected, current):
+                    raise RuntimeError(reason or 'Live offset or calibration method changed. Review again.')
+                attempted = True
+                self.call('/printer/gcode/script', 'POST', {'script': expected['command'] + '\nSAVE_CONFIG'})
+                self.z_save_result.emit(True, 'Save request accepted. Verify the calibration after Klipper restarts.')
+            except Exception as exc:
+                detail = ('Save result uncertain; check printer.cfg / console before retrying: ' if attempted else 'Save blocked: ') + str(exc)
+                self.z_save_result.emit(False, detail)
+        threading.Thread(target=work, daemon=True).start()
 
     def emergency_stop(self):
         """Moonraker's dedicated emergency stop endpoint; never wait in the G-Code FIFO."""
@@ -477,6 +755,18 @@ _I18N = [
 _I18N.sort(key=lambda p: len(p[0]), reverse=True)
 
 _ADDED_EN_DE = {
+    ('TIME REMAINING', 'RESTZEIT'), ('FINISH AT · EST.', 'FERTIG UM · CA.'),
+    ('Display comfort', 'Display-Komfort'), ('Quick actions', 'Schnellzugriffe'),
+    ('Choose quick actions', 'Schnellzugriffe wählen'), ('Notification center', 'Mitteilungszentrale'),
+    ('Notifications', 'Mitteilungen'), ('Clear history', 'Verlauf löschen'),
+    ('Print details / Preview', 'Druckdetails / Vorschau'), ('Print details', 'Druckdetails'),
+    ('Temperature history', 'Temperaturverlauf'), ('No preview', 'Keine Vorschau'),
+    ('Live Z offset', 'Live-Z-Offset'), ('Screen locked for cleaning', 'Display zur Reinigung gesperrt'),
+    ('Slide to unlock →', 'Zum Entsperren wischen →'), ('Drag the handle all the way to the right.', 'Regler bis ganz nach rechts ziehen.'),
+    ('Lock screen for cleaning', 'Display zur Reinigung sperren'), ('Start page', 'Startseite'),
+    ('Save display settings', 'Display-Einstellungen speichern'),
+    ('Keep display on while printing / paused', 'Display während Druck / Pause anlassen'),
+    ('Pause', 'Pause'), ('Resume', 'Fortsetzen'), ('Cancel', 'Abbrechen'),
     ('Customize layout', 'Layout anpassen'), ('Edit layout', 'Layout bearbeiten'),
     ('Reorder blocks, navigation, fans and temperature tiles. Safety controls stay fixed.',
      'Blöcke, Navigation, Lüfter und Temperaturkacheln sortieren. Sicherheitsfunktionen bleiben fest.'),
@@ -610,6 +900,13 @@ _ADDED_EN_DE = {
     ('Cannot verify printer status:', 'Druckerstatus kann nicht geprüft werden:'),
     ('Shutdown rejected by Moonraker:', 'Herunterfahren von Moonraker abgelehnt:'),
     ('Shutdown request status unknown:', 'Status der Shutdown-Anforderung unbekannt:'),
+    ('Heating to', 'Heizt auf'),
+    ('At target', 'Soll erreicht'),
+    ('Cooling to', 'Kühlt auf'),
+    ('Heating', 'Heizt auf'),
+    ('Cooling', 'Kühlt ab'),
+    ('Heater off', 'Heizung aus'),
+    ('Target unavailable', 'Sollwert nicht verfügbar'),
     ('Print temperatures', 'Drucktemperaturen'),
     ('Waiting for heater data...', 'Warte auf Heizungsdaten ...'),
     ('No heaters or chamber sensors found.', 'Keine Heizungen oder Kammersensoren gefunden.'),
@@ -840,7 +1137,7 @@ def touch_dialog_style(source):
                                      conf('display', 'ui_scale', 'auto'))
     if tiny:
         source += '\nQPushButton { min-height: 22px; padding: 1px 2px; } QLineEdit { min-height: 26px; }'
-    return scaled_style(source, scale)
+    return scaled_style(source, scale * bounded_number(conf('display', 'font_scale', '1'), 1, .8, 1.5))
 
 
 def label(text, name=None):
@@ -856,7 +1153,7 @@ def button(text, func, primary=False):
     if primary:
         b.setObjectName('primary')
     b.clicked.connect(func)
-    b.setMinimumHeight(40)
+    b.setMinimumHeight(round(40 * bounded_number(conf('display', 'button_scale', '1'), 1, .8, 1.5)))
     return b
 
 
@@ -1831,6 +2128,168 @@ class LayoutEditor(QDialog):
         self.load_category()
 
 
+class TemperatureHistory(QWidget):
+    """Small bounded in-memory plot, sampled at 5 seconds, no external libraries."""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.samples = deque(maxlen=180)
+        self.setMinimumHeight(105)
+        self.last_sample = 0
+        self.colors = ('#ff8e85', '#75c3ff', '#f4c36c')
+
+    def sample(self, status):
+        now = time.monotonic()
+        if now - self.last_sample < 5:
+            return
+        self.last_sample = now
+        active = status.get('toolhead', {}).get('extruder', '')
+        chamber = next((n for n in status if n.startswith(('heater_generic ', 'temperature_sensor ')) and 'chamber' in n.lower()), '')
+        values = [fval(status.get(n, {}).get('temperature'), float('nan')) for n in (active, 'heater_bed', chamber)]
+        self.samples.append((now, active, values))
+        if self.isVisible():
+            self.update()
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        p.fillRect(self.rect(), QColor('#131e2d'))
+        p.setPen(QColor('#aab8ce'))
+        x = 6
+        for title, color in zip(('Nozzle', 'Bed', 'Chamber'), self.colors):
+            p.setPen(QColor(color))
+            p.drawText(x, 15, title)
+            x += p.fontMetrics().horizontalAdvance(title) + 13
+        samples = list(self.samples)
+        values = [v for _, _, row in samples for v in row if math.isfinite(v)]
+        if len(samples) < 2 or not values:
+            p.drawText(self.rect(), Qt.AlignCenter, 'Collecting temperature data…')
+            return
+        x0, y0, w, h = 32, 23, max(1, self.width()-38), max(1, self.height()-43)
+        lo, hi = min(0, min(values)), max(50, max(values)+5)
+        p.setPen(QColor('#7a8da4'))
+        p.drawText(2, y0+10, str(round(hi)))
+        p.drawText(2, y0+h, str(round(lo)))
+        window = min(900, max(60, samples[-1][0]-samples[0][0]))
+        t0 = samples[-1][0] - window
+        for i, color in enumerate(self.colors):
+            p.setPen(QPen(QColor(color), 2))
+            prev = None
+            prev_tool = None
+            prev_stamp = 0
+            for stamp, tool, row in samples:
+                v = row[i]
+                if not math.isfinite(v) or stamp < t0:
+                    prev = None
+                    continue
+                x = x0 + (stamp-t0)/window*w
+                y = y0 + (hi-v)/(hi-lo)*h
+                if prev is not None and stamp - prev_stamp <= 15 and (i != 0 or tool == prev_tool):
+                    p.drawLine(round(prev[0]), round(prev[1]), round(x), round(y))
+                prev, prev_tool, prev_stamp = (x,y), tool, stamp
+        p.setPen(QColor('#aab8ce'))
+        p.drawText(x0, self.height()-3, f'-{round(window/60)} min')
+        p.drawText(max(x0, self.width()-35), self.height()-3, 'Now')
+
+
+class ScreenShade(QWidget):
+    """Software dim/blank overlay; first touch wakes without activating a control."""
+    def __init__(self, owner):
+        super().__init__(owner)
+        self.owner = owner
+        self.opacity = 150
+        self.setAttribute(Qt.WA_NoSystemBackground, True)
+        self.setAttribute(Qt.WA_TranslucentBackground, True)
+        self.hide()
+
+    def paintEvent(self, event):
+        QPainter(self).fillRect(self.rect(), QColor(0, 0, 0, self.opacity))
+
+    def mousePressEvent(self, event):
+        event.accept()
+
+    def mouseReleaseEvent(self, event):
+        event.accept()
+        self.owner.wake_screen()
+
+
+class UnlockSlider(QWidget):
+    unlocked = pyqtSignal()
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setMinimumHeight(58)
+        self.position = 0.0
+        self.dragging = False
+        self.start = 0
+        self.handle = 48
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(QColor('#26364e'))
+        painter.drawRoundedRect(QRectF(2, 4, max(1, self.width()-4), self.height()-8), 20, 20)
+        painter.setPen(QColor('#b9cce4'))
+        painter.drawText(self.rect(), Qt.AlignCenter, tr('Slide to unlock →'))
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(QColor('#d4e3f7'))
+        x = 4 + self.position * max(1, self.width()-self.handle-8)
+        painter.drawRoundedRect(QRectF(x, 7, self.handle, self.height()-14), 17, 17)
+        painter.setPen(QColor('#26364e'))
+        painter.drawText(QRectF(x, 7, self.handle, self.height()-14), Qt.AlignCenter, '›')
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton and 0 <= event.x() <= self.handle + 9:
+            self.dragging = True
+            self.start = event.x()
+            event.accept()
+        else:
+            event.ignore()
+
+    def mouseMoveEvent(self, event):
+        if self.dragging:
+            self.position = max(0.0, min(1.0, (event.x()-self.start) / max(1, self.width()-self.handle-8)))
+            self.update()
+            event.accept()
+
+    def mouseReleaseEvent(self, event):
+        unlock = self.dragging and self.position >= .90
+        self.dragging = False
+        self.position = 0.0
+        self.update()
+        event.accept()
+        if unlock:
+            self.unlocked.emit()
+
+
+class CleaningLock(QDialog):
+    """Touch cleaning lock: only a continuous slider drag unlocks (not a tap)."""
+    def __init__(self, owner):
+        super().__init__(owner, Qt.FramelessWindowHint)
+        self.setWindowModality(Qt.ApplicationModal)
+        self.setStyleSheet(owner.styleSheet())
+        l = QVBoxLayout(self)
+        l.addStretch()
+        title = label('Screen locked for cleaning', 'title')
+        title.setAlignment(Qt.AlignCenter)
+        l.addWidget(title)
+        subtitle = label('Slide to unlock →', 'metric')
+        subtitle.setAlignment(Qt.AlignCenter)
+        l.addWidget(subtitle)
+        self.slider = UnlockSlider(self)
+        self.slider.unlocked.connect(self.accept)
+        l.addWidget(self.slider)
+        l.addWidget(label('Drag the handle all the way to the right.', 'caption'))
+        l.addStretch()
+
+    def reject(self):
+        # Escape, accidental taps and window manager close do not unlock.
+        pass
+
+    def closeEvent(self, event):
+        event.ignore()
+
+
 class Screen(QWidget):
     def __init__(self):
         super().__init__()
@@ -1842,7 +2301,7 @@ class Screen(QWidget):
         screen_height = available.height() if available is not None else 480
         self.compact, self.tiny, self.ui_scale = display_profile(
             screen_width, screen_height, conf('display', 'ui_scale', 'auto'))
-        self.setStyleSheet(scaled_style(STYLE, self.ui_scale))
+        self.setStyleSheet(display_style(STYLE, self.ui_scale))
         self.resize(screen_width, screen_height)
         self.s = {}
         self.all_objects = []
@@ -1855,6 +2314,40 @@ class Screen(QWidget):
         self.network.printer_health.connect(self.update_printer_health)
         self.network.recovery_result.connect(self.show_recovery_result)
         self.network.shutdown_result.connect(self.show_shutdown_result)
+        self.network.print_metadata.connect(self.receive_print_metadata)
+        self.network.print_action_result.connect(self.print_action_result)
+        self.network.live_z_result.connect(self.live_z_result)
+        self.network.z_save_result.connect(self.z_save_result)
+        self._z_pending = False
+        self._z_save_pending = False
+        self._z_save_locked = False
+        self._z_save_accepted = False
+        self._z_after_print = None
+        self._z_after_ready = False
+        self._z_step = .01
+        self._print_meta_name = ''
+        self._print_meta = {}
+        self._metadata_requested = 0.0
+        self._print_action_pending = False
+        self._live_status = {}
+        self._live_status_at = 0.0
+        self._sensor_previous = {}
+        self._heating_previous = {}
+        self._history = deque(maxlen=150)
+        self._history_path = PRINTER_CONFIG_DIR / 'veloxscreen_notifications.json'
+        self._history_dirty = False
+        self._event_seen = {}
+        self._load_history()
+        self._last_input = time.monotonic()
+        self._clean_lock = None
+        self._shade = None
+        self._wake_suppress = 0.0
+        self._brightness_path = self.find_backlight()
+        self._dpms_available = bool(os.environ.get("DISPLAY") and shutil.which("xset"))
+        self._dpms_off = False
+        self._dpms_enabled_by_us = False
+        if self._brightness_path is not None and conf('display', 'brightness', ''):
+            self.set_brightness(bounded_number(conf('display', 'brightness', '100'), 100, 5, 100))
         # Default to confirmation even for old configs with confirm_commands=false.
         self.confirm_shutdown = conf('behavior', 'confirm_shutdown', 'true').strip().lower() not in ('false', 'no', '0', 'off')
         self._shutdown_pending = False
@@ -1862,6 +2355,8 @@ class Screen(QWidget):
         self._health_state = 'unknown'
         self._health_message = ''
         self._local_estop = False
+        self._temperature_status = None
+        self.preset_status_buttons = []
         self.busy_files = False
         self.selected_file = ''
         self.pages = {}
@@ -1920,6 +2415,14 @@ class Screen(QWidget):
         self._notification_timer.timeout.connect(self.hide_notification)
         self._build()
         self._build_notification_banner()
+        self._shade = ScreenShade(self)
+        QApplication.instance().installEventFilter(self)
+        self.comfort_timer = QTimer(self)
+        self.comfort_timer.timeout.connect(self.check_idle_display)
+        self.comfort_timer.start(1000)
+        self.history_timer = QTimer(self)
+        self.history_timer.timeout.connect(self.save_history)
+        self.history_timer.start(5000)
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.network.poll)
         self.timer.start(max(700, int(conf('connection', 'refresh_ms', '1200'))))
@@ -1962,7 +2465,7 @@ class Screen(QWidget):
                     ('Temperaturen', self.make_temperatures), ('Steuerung', self.make_control),
                     ('LED Effects', self.make_led_effects), ('Dateien', self.make_files), ('Kalibrierung', self.make_calib),
                     ('Konsole', self.make_console), ('Makros', self.make_macros),
-                    ('Network', self.make_network), ('Einstellungen', self.make_settings)]
+                    ('Network', self.make_network), ('Notifications', self.make_notifications), ('Einstellungen', self.make_settings)]
         self.nav_layout = nav_layout
         self.nav_defaults = [name for name, _ in sections]
         self.nav_order = list(self.nav_defaults)
@@ -1984,7 +2487,7 @@ class Screen(QWidget):
             self.pages[name] = self._page(name, builder)
             self.stack.addWidget(self.pages[name])
         nav_layout.addStretch()
-        sl.addWidget(label('v0.3.17 alpha', 'caption'))
+        sl.addWidget(label('v0.4.1 alpha', 'caption'))
         # IMPORTANT: Qt otherwise deletes self.connection and all nav buttons.
         outer.addWidget(sidebar)
         sidebar.setVisible(not self.compact)
@@ -2001,10 +2504,24 @@ class Screen(QWidget):
         self.health_banner.clicked.connect(lambda: self.navigate('Recovery'))
         self.health_banner.hide()
         content_layout.addWidget(self.health_banner)
+        self.quick_bar = FingerScrollArea()
+        self.quick_bar.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.quick_bar.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.quick_bar.setFixedHeight(round((38 if self.tiny else 52) * max(1.0, bounded_number(conf('display', 'button_scale', '1'), 1, .8, 1.5))))
+        self.quick_panel = QWidget()
+        self.quick_layout = QHBoxLayout(self.quick_panel)
+        self.quick_layout.setContentsMargins(4, 2, 4, 2)
+        self.quick_layout.setSpacing(4)
+        self.quick_bar.setWidget(self.quick_panel)
+        self.quick_bar.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
+        content_layout.addWidget(self.quick_bar)
         content_layout.addWidget(self.stack, 1)
+        content_layout.addWidget(self.print_stop_button)
         outer.addWidget(content_side, 1)
         self.apply_layout_orders()
-        self.navigate('Dashboard')
+        self.rebuild_quick_bar()
+        initial = conf('display', 'start_page', 'Dashboard')
+        self.navigate(initial if initial in self.pages else 'Dashboard')
 
     def layout_block(self, page, parent_layout, key, title):
         if page not in self.layout_groups:
@@ -2114,6 +2631,7 @@ class Screen(QWidget):
 
     def navigate(self, name):
         self.stack.setCurrentWidget(self.pages[name])
+        self.print_stop_button.setVisible(name == 'Print')
         if self.compact_nav is not None:
             names = self.nav_order
             self.compact_nav.blockSignals(True)
@@ -2125,6 +2643,8 @@ class Screen(QWidget):
             self.network.load_files(None)
         if name == 'Network':
             self.scan_wifi()
+        if name == 'Notifications':
+            self.render_history()
 
 
     def show_startup_splash(self, force=False, duration=None, animated=None):
@@ -2149,6 +2669,8 @@ class Screen(QWidget):
         if overlay is not None:
             overlay.setGeometry(self.rect())
         self._position_notification_banner()
+        if getattr(self, '_shade', None) is not None:
+            self._shade.setGeometry(self.rect())
 
     def preview_startup_splash(self):
         self.show_startup_splash(force=True,
@@ -2311,6 +2833,7 @@ class Screen(QWidget):
             self.confirm_script(f'SET_VELOCITY_LIMIT {command}={val:g}', title)
 
     def rebuild_presets(self):
+        self.preset_status_buttons = []
         entries = dict(config.items('temperature_presets')) if config.has_section('temperature_presets') else {}
         entries = [(name, entries[name]) for name in ordered_items(entries, read_layout_order('preset_order'))]
         for grid, columns in ((getattr(self, 'dashboard_presets', None), 3),
@@ -2321,9 +2844,68 @@ class Screen(QWidget):
             for i, (name, content) in enumerate(entries):
                 b = button(name, partial(self.apply_temp_preset, name, content))
                 b.setMinimumHeight(39)
+                self.preset_status_buttons.append((b, name, content))
                 grid.addWidget(b, i // (1 if self.tiny else columns), i % (1 if self.tiny else columns))
             if not entries:
                 grid.addWidget(label('No temperature presets. Tap Edit presets.', 'caption'), 0, 0)
+        self.update_preset_highlights(self._temperature_status)
+        if hasattr(self, 'quick_layout'):
+            self.rebuild_quick_bar()
+
+    @staticmethod
+    def paint_heat_state(widget, state):
+        # Fixed high-contrast colors are independent of user-selected theme colors.
+        colors = {'heating': ('#8c242c', '#ff7373'),
+                  'ready': ('#205d42', '#6bd6a0'),
+                  'cooling': ('#79501b', '#efbc64')}
+        if state in colors:
+            bg, border = colors[state]
+            style = ('background-color: %s; color: white; border: 1px solid %s; '
+                     'border-radius: 5px; padding: 3px; font-weight: bold;' % (bg, border))
+        else:
+            style = ''
+        if widget.styleSheet() != style:
+            widget.setStyleSheet(style)
+
+    def show_heater_target(self, widget, entry, editable=False):
+        state = heater_state(entry)
+        if state == 'unknown':
+            text = tr('Target unavailable')
+        elif state == 'off':
+            text = tr('Heater off') + ' · 0 °C'
+        else:
+            prefix = {'heating': 'Heating to', 'ready': 'At target', 'cooling': 'Cooling to'}[state]
+            text = tr(prefix) + ' ' + fmt(entry.get('target'), 0) + ' °C'
+        if editable and state != 'unknown':
+            if state in ('heating', 'ready', 'cooling'):
+                text = tr(prefix) + '\n' + fmt(entry.get('target'), 0) + ' °C  ✎'
+            else:
+                text = tr('Heater off') + '\n0 °C  ✎'
+        widget.setText(text)
+        self.paint_heat_state(widget, state)
+
+    def update_preset_highlights(self, status):
+        for widget, name, content in self.preset_status_buttons:
+            state = 'off'
+            if status is not None:
+                targets = self.resolve_preset_targets(content, status)
+                state = matching_preset_state(targets, status)
+            suffix = {'heating': 'Heating', 'ready': 'At target', 'cooling': 'Cooling'}.get(state)
+            widget.setText(tr(name) + ('\n' + tr(suffix) if suffix else ''))
+            self.paint_heat_state(widget, state)
+
+    def clear_heat_status(self):
+        # Do not present stale targets as live after an error or disconnect.
+        self._temperature_status = None
+        self.update_preset_highlights(None)
+        for widgets in (self.dash_temp_widgets, self.temp_widgets, self.print_temp_widgets):
+            for name, (reading, target) in widgets.items():
+                reading.setText('-- °C')
+                if target is not None and (name == 'extruder' or re.fullmatch(r'extruder\d+', name)
+                        or name == 'heater_bed' or name.startswith('heater_generic ')):
+                    self.show_heater_target(target, {})
+                    if isinstance(target, QPushButton):
+                        target.setEnabled(False)
 
     def edit_presets(self):
         editor = TemperaturePresetEditor(self)
@@ -2345,24 +2927,79 @@ class Screen(QWidget):
 
     def make_print_view(self, l):
         """Live printing control page (opens on print start, stays navigable)."""
-        f, c = card('Current print')
+        f, c = card()
+        if self.tiny:
+            c.setContentsMargins(4, 3, 4, 3)
+            c.setSpacing(3)
         self.print_status_label = label('Waiting for printer status...', 'caption')
         self.print_status_label.setWordWrap(True)
         c.addWidget(self.print_status_label)
+        self.print_status_label.setTextFormat(Qt.PlainText)
         self.print_progress_label = label('-- %', 'metric')
+        self.print_progress_label.setAlignment(Qt.AlignCenter)
+        if self.tiny:
+            self.print_progress_label.setStyleSheet('font-size: 15px; font-weight: bold;')
         c.addWidget(self.print_progress_label)
+        self.print_progress_bar = QProgressBar()
+        self.print_progress_bar.setRange(0, 1000)
+        self.print_progress_bar.setTextVisible(False)
+        self.print_progress_bar.setFixedHeight(9)
+        c.addWidget(self.print_progress_bar)
+        times = QHBoxLayout()
+        self.remaining_label = label('—')
+        self.eta_label = label('—')
+        for title, widget in (('TIME REMAINING', self.remaining_label), ('FINISH AT · EST.', self.eta_label)):
+            panel, box = card()
+            if self.tiny:
+                box.setContentsMargins(4, 4, 4, 4)
+                box.setSpacing(2)
+            caption = label(title, 'caption')
+            caption.setAlignment(Qt.AlignCenter)
+            box.addWidget(caption)
+            widget.setAlignment(Qt.AlignCenter)
+            widget.setStyleSheet(f'font-size: {round((23 if self.tiny else 30)*self.ui_scale*bounded_number(conf("display", "font_scale", "1"), 1, .8, 1.5))}px; font-weight: bold; color: #75c3ff;')
+            box.addWidget(widget)
+            times.addWidget(panel)
+        c.addLayout(times)
+        self.print_estimate_info = label('Waiting for print data', 'caption')
+        c.addWidget(self.print_estimate_info)
         l.addWidget(f)
 
-        # Emergency stop is intentionally visible before scrolling down.
+        # Pinned outside the print scroller; remains reachable while scrolling.
         stop = QPushButton('EMERGENCY STOP  ·  M112')
         stop.setObjectName('danger')
-        stop.setMinimumHeight(50 if not self.tiny else 44)
+        stop.setMinimumHeight(44 if not self.tiny else 30)
+        if self.tiny:
+            stop.setStyleSheet('QPushButton { font-size: 12px; padding: 3px; min-height: 24px; }')
         stop.setToolTip('Immediately stops Klipper. Requires firmware restart/recovery.')
         stop.clicked.connect(self.request_emergency_stop)
-        l.addWidget(stop)
+        self.print_stop_button = stop
+        stop.hide()
+        actions = QHBoxLayout()
+        self.print_actions = {}
+        for name in ('pause', 'resume', 'cancel'):
+            b = button(name.capitalize(), partial(self.request_print_action, name))
+            b.setEnabled(False)
+            self.print_actions[name] = b
+            actions.addWidget(b)
+        l.addLayout(actions)
+        self.print_action_status = label('', 'caption')
+        l.addWidget(self.print_action_status)
         l.addWidget(button('Restart / Recovery options', self.open_recovery_menu))
 
         root = l
+        l = self.layout_block('print_order', root, 'job_details', 'Print details / Preview')
+        f, c = card('Print details')
+        self.print_thumb = QLabel(tr('No preview'))
+        self.print_thumb.setAlignment(Qt.AlignCenter)
+        self.print_thumb.setMinimumHeight(65)
+        self.print_thumb.setMaximumHeight(120 if self.tiny else 160)
+        self.print_thumb.setTextFormat(Qt.PlainText)
+        c.addWidget(self.print_thumb)
+        self.print_details = label('Layer — · Filament — · Active tool —')
+        self.print_details.setTextFormat(Qt.PlainText)
+        c.addWidget(self.print_details)
+        l.addWidget(f)
         l = self.layout_block('print_order', root, 'motion', 'Live motion')
         grid = QGridLayout()
         self.print_metrics = {}
@@ -2402,6 +3039,44 @@ class Screen(QWidget):
         c.addLayout(self.print_fan_area)
         l.addWidget(f)
         l.addWidget(label('Manual fans only. Automatic fans are hidden on this page.', 'caption'))
+        l = self.layout_block('print_order', root, 'babystep', 'Live Z offset')
+        f, c = card('Live Z offset · Babystepping')
+        self.print_z_offset = label('Z offset: —', 'metric')
+        c.addWidget(self.print_z_offset)
+        self.z_buttons = []
+        self.z_step_combo = QComboBox()
+        for step in Z_STEPS:
+            self.z_step_combo.addItem(f'{step:.3f} mm', step)
+        self.z_step_combo.setCurrentIndex(1)
+        self.z_step_combo.currentIndexChanged.connect(lambda _: setattr(self, '_z_step', float(self.z_step_combo.currentData())))
+        c.addWidget(self.z_step_combo)
+        bar = QHBoxLayout()
+        for sign, title in ((-1, 'Z −'), (1, 'Z +')):
+            b = button(title, lambda checked=False, sign=sign: self.adjust_print_z(sign * self._z_step))
+            self.z_buttons.append(b)
+            b.setEnabled(False)
+            bar.addWidget(b)
+        c.addLayout(bar)
+        self.z_reset_button = button('Reset live Z to 0', self.reset_live_z)
+        self.z_save_button = button('Save Z offset', self.request_z_save)
+        self.z_cancel_button = button('Cancel save reminder', self.cancel_z_reminder)
+        for b in (self.z_reset_button, self.z_save_button, self.z_cancel_button):
+            b.setEnabled(False)
+            c.addWidget(b)
+        self.z_cancel_button.hide()
+        self.z_save_hint = label('', 'caption')
+        self.z_save_hint.setWordWrap(True)
+        c.addWidget(self.z_save_hint)
+        self.z_action_status = label('', 'caption')
+        self.z_action_status.setWordWrap(True)
+        c.addWidget(self.z_action_status)
+        c.addWidget(label('Live offset in mm. Verify clearance and direction. Saving permanently restarts Klipper.', 'caption'))
+        l.addWidget(f)
+        l = self.layout_block('print_order', root, 'temperature_history', 'Temperature history')
+        f, c = card('Temperature history')
+        self.temp_history = TemperatureHistory()
+        c.addWidget(self.temp_history)
+        l.addWidget(f)
 
     def request_emergency_stop(self):
         """Always confirm, even when normal macro confirmations are disabled."""
@@ -2449,6 +3124,19 @@ class Screen(QWidget):
         self._health_state = state
         self._health_message = message
         if state != 'ready':
+            self._live_status_at = 0.0
+            if self._z_after_print is not None:
+                self.cancel_z_reminder()
+            self._heating_previous.clear()
+            self._sensor_previous.clear()
+            self.update_job_controls({})
+            self.remaining_label.setText('—')
+            self.eta_label.setText('—')
+            self.print_estimate_info.setText('Printer status unavailable')
+            self.print_progress_label.setText('— %')
+            self.wake_screen()
+            self.release_clean_lock()
+        if state != 'ready':
             self._shutdown_idle = False
             self.update_shutdown_button()
         if state == 'ready':
@@ -2459,6 +3147,8 @@ class Screen(QWidget):
             self.health_banner.hide()
             if previous != 'ready':
                 self.health_result.setText('Printer ready.')
+                if previous != 'unknown':
+                    self.record_event('Printer', 'Printer ready', 'Klipper is ready.', popup=True)
             return
         fault = state in ('error', 'shutdown', 'offline', 'disconnected')
         explicit_stop = ('m112' in message.lower() or 'emergency stop' in message.lower())
@@ -2476,13 +3166,11 @@ class Screen(QWidget):
         self.health_banner.setStyleSheet('QPushButton { background: ' + ('#922b35' if fault else '#77551d') + '; color: white; font-weight: bold; }')
         self.health_banner.show()
         self._print_temp_live = False
-        for reading, target in self.print_temp_widgets.values():
-            reading.setText('-- °C')
-            if target is not None:
-                target.setEnabled(False)
+        self.clear_heat_status()
         # Navigate once per fault transition, not on every poll. A persistent banner
         # remains visible on other pages.
         if fault and state != previous:
+            self.record_event('Warning', title, message, popup=False)
             self.health_result.setText('')
             self.navigate('Recovery')
 
@@ -2878,7 +3566,7 @@ class Screen(QWidget):
         self.theme = dict(theme)
         THEME = dict(theme)
         STYLE = themed_style(THEME)
-        self.setStyleSheet(scaled_style(STYLE, self.ui_scale))
+        self.setStyleSheet(display_style(STYLE, self.ui_scale))
         # Fan sliders use a custom stylesheet, so refresh it explicitly.
         for _name, (_text, slider) in list(getattr(self, 'fan_widgets', {}).items()) + list(getattr(self, 'print_fan_widgets', {}).items()):
             if slider is not None:
@@ -2925,6 +3613,8 @@ class Screen(QWidget):
     def show_notification(self, message, force=False):
         if not force and not self.notifications_enabled:
             return
+        if getattr(self, '_clean_lock', None) is not None or (getattr(self, '_shade', None) is not None and self._shade.isVisible()):
+            return
         splash = getattr(self, '_splash_overlay', None)
         if splash is not None and splash.isVisible() and not force:
             return
@@ -2935,6 +3625,7 @@ class Screen(QWidget):
         if message == self._last_notification[0] and now - self._last_notification[1] < 2.0:
             return
         self._last_notification = (message, now)
+        self.notification_text.setTextFormat(Qt.PlainText)
         self.notification_text.setText(message)
         self._position_notification_banner()
         self.notification_banner.show()
@@ -2975,7 +3666,7 @@ class Screen(QWidget):
             self.log(text)
             readable = self._displayable_response(text)
             if readable:
-                self.show_notification(readable)
+                self.record_event('Warning' if text.startswith('!!') else 'G-Code', 'G-Code response', readable, popup=True)
 
     def change_notifications(self, checked):
         previous = self.notifications_enabled
@@ -3002,6 +3693,719 @@ class Screen(QWidget):
         except OSError as exc:
             self.notification_duration = old
             warn(self, 'Settings', 'Could not save config: ' + str(exc))
+
+    # ---------- Print monitoring ----------
+    def live_print_state(self):
+        if self._health_state != 'ready' or time.monotonic() - self._live_status_at > 5:
+            return None
+        return self._live_status.get('print_stats', {}).get('state')
+
+    def receive_print_metadata(self, filename, metadata, thumbnail):
+        if filename != self._print_meta_name:
+            return
+        self._print_meta = metadata
+        if thumbnail:
+            pix = QPixmap()
+            if pix.loadFromData(thumbnail) and pix.width() <= 4096 and pix.height() <= 4096:
+                self.print_thumb.setPixmap(pix.scaled(200 if self.tiny else 300, 115 if self.tiny else 150, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+            else:
+                self.print_thumb.setText('No preview')
+        else:
+            self.print_thumb.setText('No preview')
+
+    def update_job_controls(self, status):
+        state = status.get('print_stats', {}).get('state')
+        ready = self._health_state == 'ready' and time.monotonic() - self._live_status_at <= 5
+        for action, b in self.print_actions.items():
+            allowed = state in {'pause': ('printing',), 'resume': ('paused',), 'cancel': ('printing', 'paused')}[action]
+            b.setEnabled(ready and allowed and not self._print_action_pending)
+        gm = status.get('gcode_move', {})
+        z = live_z_value(status) if ready else None
+        self.print_z_offset.setText('Z offset: ' + (f'{z:+.3f} mm' if z is not None else '—'))
+        allowed = ready and state == 'printing' and z is not None and not self._z_pending and not self._z_save_pending and 'z' in status.get('toolhead', {}).get('homed_axes', '')
+        for b in self.z_buttons:
+            b.setEnabled(allowed)
+        self.z_reset_button.setEnabled(allowed and z_single_tool(status) and .0005 <= abs(z) <= .5)
+        candidate, reason = z_save_snapshot(status, conf('babystep', 'eddy_method', '').strip().lower()) if ready else (None, 'Printer status unavailable.')
+        idle = ready and state in ('standby', 'complete') and host_shutdown_allowed(status)
+        self.z_save_button.setText('Save after print' if state in ('printing','paused') else ('Confirm & save Z offset' if self._z_after_ready else 'Save Z offset'))
+        self.z_save_button.setEnabled(bool(candidate and (idle or state == 'printing') and not self._z_pending and not self._z_save_pending and not self._z_save_locked))
+        self.z_save_hint.setText(('Verify the last save in printer.cfg and restart VeloxScreen before retrying.' if self._z_save_locked else ('Method: ' + candidate['method'] + ' · ' + f"{candidate['z']:+.3f} mm") if candidate else reason))
+        self.z_cancel_button.setVisible(self._z_after_print is not None)
+        self.z_cancel_button.setEnabled(self._z_after_print is not None and not self._z_save_pending)
+
+    def refresh_job(self, status):
+        ps = status.get('print_stats', {})
+        state = ps.get('state')
+        filename = str(ps.get('filename') or '')
+        if filename != self._print_meta_name:
+            self._print_meta_name = filename
+            self._print_meta = {}
+            self._metadata_requested = 0.0
+            self.print_thumb.setText('No preview')
+        if filename and not self._print_meta and (not self._metadata_requested or time.monotonic() - self._metadata_requested > 60):
+            self._metadata_requested = time.monotonic()
+            self.network.fetch_print_metadata(filename)
+        progress = print_progress(status)
+        self.print_progress_bar.setValue(round(progress * 1000))
+        elapsed = bounded_number(ps.get('print_duration'), 0, 0, 1e9)
+        estimate = remaining_seconds(progress, elapsed, self._print_meta.get('estimated_time'))
+        if state in ('printing', 'paused'):
+            self.remaining_label.setText(duration_text(estimate))
+            if state == 'printing' and estimate is not None and math.isfinite(estimate):
+                finish = datetime.datetime.fromtimestamp(time.time()+estimate)
+                today = datetime.date.today()
+                when = finish.strftime('%H:%M')
+                if finish.date() != today:
+                    when += '\n' + finish.strftime('%d.%m.')
+                self.eta_label.setText(when)
+                self.print_estimate_info.setText('Estimated · host local time · elapsed ' + duration_text(elapsed))
+            else:
+                self.eta_label.setText('PAUSED' if state == 'paused' else '—')
+                self.print_estimate_info.setText('Paused · estimate excludes pause duration' if state == 'paused' else 'Waiting for sufficient progress or slicer estimate')
+        elif state == 'complete':
+            self.remaining_label.setText('00h 00m')
+            self.eta_label.setText('DONE')
+            self.print_estimate_info.setText('Print complete · elapsed ' + duration_text(elapsed))
+        else:
+            self.remaining_label.setText('—')
+            self.eta_label.setText('—')
+            self.print_estimate_info.setText('No active print')
+        info = ps.get('info') or {}
+        current = info.get('current_layer')
+        total = info.get('total_layer') or self._print_meta.get('layer_count')
+        layer = f'{current if current is not None else "—"} / {total if total else "—"}'
+        active = status.get('toolhead', {}).get('extruder') or '—'
+        tool = next((name for name, obj in config.items('tools') if obj == active), None) if config.has_section('tools') else None
+        if not tool and re.fullmatch(r'extruder\d*', active):
+            tool = 'T' + (active[8:] or '0')
+        length = fval(ps.get('filament_used'), float('nan'))
+        usage = f'{length / 1000:.2f} m' if math.isfinite(length) and length >= 0 else '—'
+        density = bounded_number(conf('print_view', 'filament_density', '0'), 0, 0, 30)
+        settings = status.get('configfile', {}).get('settings', {})
+        diameters = {fval(settings.get(n, {}).get('filament_diameter'), -1) for n in self.all_objects if re.fullmatch(r'extruder\d*', n)}
+        if len(diameters) == 1:
+            grams = filament_grams(length, next(iter(diameters)), density)
+            if grams is not None:
+                usage += f' · ~{grams:.1f} g'
+        self.print_details.setText(f'Layer: {layer}\nFilament used: {usage}\nActive tool: {tool or active} · {active}')
+        self.update_job_controls(status)
+
+    def request_print_action(self, action):
+        state = self.live_print_state()
+        allowed = {'pause': ('printing',), 'resume': ('paused',), 'cancel': ('printing', 'paused')}
+        if self._print_action_pending or state not in allowed.get(action, ()):
+            return
+        if action == 'cancel' and QMessageBox.question(self, 'Cancel print', 'Cancel the current print? This cannot be undone.', QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
+            return
+        self._print_action_pending = True
+        self.update_job_controls(self._live_status)
+        self.print_action_status.setText(action.capitalize() + ' requested…')
+        self.network.print_action(action)
+
+    def print_action_result(self, action, accepted, message):
+        self._print_action_pending = False
+        self.print_action_status.setText(message if accepted else 'Request not confirmed: ' + message)
+        self.update_job_controls(self._live_status)
+        if not accepted:
+            self.record_event('Warning', 'Print action not confirmed', message, popup=True)
+
+    def adjust_print_z(self, step):
+        if self._z_pending or self.live_print_state() != 'printing' or 'z' not in self._live_status.get('toolhead', {}).get('homed_axes', ''):
+            return
+        if abs(step) not in Z_STEPS or self._z_save_pending:
+            return
+        if self.confirm_enabled and QMessageBox.question(self, 'Live Z offset', f'Adjust the live Z offset by {step:+.3f} mm?', QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
+            return
+        self._z_pending = True
+        self.update_job_controls(self._live_status)
+        self.z_action_status.setText('Adjusting…')
+        self.network.adjust_live_z(step)
+
+    def live_z_result(self, accepted, message):
+        self._z_pending = False
+        self._live_status_at = 0.0
+        self.z_action_status.setText(message)
+        self.update_job_controls({})
+        if not accepted:
+            self.record_event('Warning', 'Live Z request not confirmed', message, popup=True)
+
+    def reset_live_z(self):
+        status = self._live_status
+        z = live_z_value(status)
+        if self._z_pending or self._z_save_pending or self.live_print_state() != 'printing' or not z_single_tool(status) or z is None or not .0005 <= abs(z) <= .5:
+            return
+        if QMessageBox.question(self, 'Reset live Z', f'Reset the entire live Z offset from {z:+.3f} mm to zero? The Z axis will move. Verify nozzle clearance.', QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
+            return
+        self.cancel_z_reminder()
+        self._z_pending = True
+        self.update_job_controls(status)
+        self.network.adjust_live_z(0, reset_expected=z)
+
+    def request_z_save(self):
+        state = self.live_print_state()
+        if state is None or self._z_pending or self._z_save_pending or self._z_save_locked:
+            return
+        eddy = conf('babystep', 'eddy_method', '').strip().lower()
+        snapshot, reason = z_save_snapshot(self._live_status, eddy)
+        if not snapshot:
+            self.z_action_status.setText(reason)
+            return
+        if state == 'printing':
+            self._z_after_print = snapshot
+            self._z_after_ready = False
+            self.z_action_status.setText('Reminder armed. Confirm after successful print. No automatic save or restart.')
+            self.update_job_controls(self._live_status)
+            return
+        if state not in ('standby','complete') or not host_shutdown_allowed(self._live_status):
+            return
+        if self._z_after_ready and not z_snapshot_matches(snapshot, self._z_after_print):
+            self.cancel_z_reminder()
+            self.z_action_status.setText('Saved reminder no longer matches live offset. Review before saving.')
+            return
+        message = (f"Apply the entire live Z offset {snapshot['z']:+.3f} mm to {snapshot['method']}?\n\n"
+                   + snapshot['command'] + '\nSAVE_CONFIG\n\nKlipper will restart. Verify this is a calibration correction, not a material/tool offset. Do not start another print. Check first layer again after restart.')
+        if QMessageBox.question(self, 'Save Z offset permanently', message, QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
+            return
+        self._z_after_print = None
+        self._z_after_ready = False
+        self._z_save_pending = True
+        self.update_job_controls(self._live_status)
+        self.z_action_status.setText('Requesting calibration save…')
+        self.network.save_live_z(snapshot, eddy)
+
+    def cancel_z_reminder(self):
+        self._z_after_print = None
+        self._z_after_ready = False
+        self.z_action_status.setText('Save reminder cleared.')
+        self.update_job_controls(self._live_status)
+
+    def check_z_reminder(self, status, previous):
+        if self._z_after_print is None:
+            return
+        state = status.get('print_stats', {}).get('state')
+        current, _ = z_save_snapshot(status, conf('babystep', 'eddy_method', '').strip().lower())
+        if (not z_snapshot_matches(current, self._z_after_print) or (current and current['duration'] < self._z_after_print['duration']) or state not in ('printing','paused','complete')
+                or (state == 'printing' and previous not in ('printing','paused'))):
+            self.cancel_z_reminder()
+            self.z_action_status.setText('Save reminder cleared: offset, job or calibration changed.')
+            self.record_event('Printer', 'Z offset reminder cancelled', 'Offset, job or calibration changed; no configuration was saved.', popup=True)
+            return
+        if state == 'complete' and not self._z_after_ready:
+            if not host_shutdown_allowed(status):
+                return
+            self._z_after_ready = True
+            self.z_action_status.setText('Print complete. Tap Confirm & save Z offset when ready.')
+            self.record_event('Printer', 'Z offset ready to save', 'Open Print and confirm the calibration save. Klipper will restart.', popup=True)
+
+    def z_save_result(self, accepted, message):
+        self._z_save_pending = False
+        self._z_save_locked = accepted or message.startswith('Save result uncertain')
+        self._z_save_accepted = accepted
+        self._live_status_at = 0.0
+        self.z_action_status.setText(message)
+        self.update_job_controls({})
+        self.record_event('Printer' if accepted else 'Warning', 'Z offset save request' if accepted else 'Z offset save not confirmed', message, popup=True)
+
+    # ---------- Persistent notification center ----------
+    def _load_history(self):
+        if not flag('notifications', 'persist_history', True):
+            return
+        try:
+            if self._history_path.stat().st_size > 512000:
+                return
+            records = json.loads(self._history_path.read_text(encoding='utf-8'))
+            for item in records[-150:] if isinstance(records, list) else []:
+                if isinstance(item, dict) and all(isinstance(item.get(k), str) for k in ('time', 'category', 'title', 'message')):
+                    self._history.append({k: item[k][:1200] for k in ('time', 'category', 'title', 'message')})
+        except (OSError, ValueError, TypeError):
+            pass
+
+    def save_history(self):
+        if not self._history_dirty or not flag('notifications', 'persist_history', True):
+            return
+        try:
+            self._history_path.parent.mkdir(parents=True, exist_ok=True)
+            fd, path = tempfile.mkstemp(prefix='.velox-notifications-', dir=str(self._history_path.parent))
+            try:
+                with os.fdopen(fd, 'w', encoding='utf-8') as handle:
+                    json.dump(list(self._history), handle, ensure_ascii=False)
+                os.replace(path, self._history_path)
+            finally:
+                if os.path.exists(path):
+                    os.unlink(path)
+            self._history_dirty = False
+        except OSError:
+            pass
+
+    def record_event(self, category, title, message='', popup=False):
+        title, message = str(title)[:160], str(message)[:1000]
+        key = (category, title, message)
+        now = time.monotonic()
+        if now - self._event_seen.get(key, -100) < 5:
+            return
+        self._event_seen = {k: v for k, v in self._event_seen.items() if now-v < 60}
+        self._event_seen[key] = now
+        self._history.append({'time': datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                              'category': category, 'title': title, 'message': message})
+        self._history_dirty = True
+        if hasattr(self, 'history_list') and self.pages.get('Notifications') is self.stack.currentWidget():
+            self.render_history()
+        if popup and flag('notifications', 'popup_' + category.lower().replace('-', '_'), True):
+            self.show_notification(message if category == 'G-Code' and message else title + (': ' + message if message else ''))
+
+    def make_notifications(self, l):
+        f, c = card('Notification center')
+        self.history_filter = QComboBox()
+        for name in ('All', 'Warning', 'Print', 'Heating', 'Filament', 'G-Code', 'Printer'):
+            self.history_filter.addItem(name)
+        self.history_filter.currentIndexChanged.connect(self.render_history)
+        c.addWidget(self.history_filter)
+        self.history_list = QListWidget()
+        self.history_list.setWordWrap(True)
+        self.history_list.setSelectionMode(QAbstractItemView.SingleSelection)
+        QScroller.grabGesture(self.history_list.viewport(), QScroller.LeftMouseButtonGesture)
+        self.history_list.setMinimumHeight(150 if self.tiny else 220)
+        self.history_list.itemClicked.connect(self.show_history_item)
+        c.addWidget(self.history_list)
+        c.addWidget(label('Tap an entry to read its full message. Last 150 events; stored locally if enabled.', 'caption'))
+        c.addWidget(button('Clear history', self.clear_history))
+        l.addWidget(f)
+        self.render_history()
+
+    def render_history(self, *_):
+        if not hasattr(self, 'history_list'):
+            return
+        filter_name = self.history_filter.currentText()
+        self.history_list.clear()
+        for entry in reversed(self._history):
+            if filter_name != 'All' and entry['category'] != filter_name:
+                continue
+            item = QListWidgetItem(entry['time'][5:] + ' · ' + entry['category'] + '\n' + entry['title'] + (' · ' + entry['message'][:110] if entry['message'] else ''))
+            item.setData(Qt.UserRole, entry)
+            if entry['category'] == 'Warning':
+                item.setForeground(QColor('#ff8e85'))
+            self.history_list.addItem(item)
+        if not self.history_list.count():
+            self.history_list.addItem('No notifications in this category')
+
+    def show_history_item(self, item):
+        entry = item.data(Qt.UserRole)
+        if not entry:
+            return
+        dialog = QDialog(self)
+        dialog.setWindowTitle(entry['title'])
+        layout = QVBoxLayout(dialog)
+        text = QPlainTextEdit(entry['time'] + '\n' + entry['category'] + '\n\n' + entry['title'] + '\n\n' + entry['message'])
+        text.setReadOnly(True)
+        layout.addWidget(text)
+        layout.addWidget(button('Close', dialog.accept))
+        fit_dialog(dialog, 600, 400)
+        dialog.exec_()
+
+    def clear_history(self):
+        if QMessageBox.question(self, 'Clear history', 'Delete the local notification history?', QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
+            return
+        self._history.clear()
+        self._history_dirty = True
+        try:
+            self._history_path.unlink(missing_ok=True)
+        except OSError as exc:
+            warn(self, 'Clear history', str(exc))
+        self.render_history()
+        self.save_history()
+
+    def track_notifications(self, status, previous):
+        ps = status.get('print_stats', {})
+        state = ps.get('state')
+        if previous is not None and previous != state:
+            titles = {'printing': 'Print resumed' if previous == 'paused' else 'Print started', 'paused': 'Print paused',
+                      'complete': 'Print completed', 'cancelled': 'Print cancelled', 'error': 'Print error'}
+            if state in titles:
+                detail = str(ps.get('filename') or '')
+                if state == 'complete':
+                    detail += ' · ' + duration_text(fval(ps.get('print_duration')))
+                if state == 'error':
+                    detail += ' · ' + str(ps.get('message') or '')
+                self.record_event('Warning' if state == 'error' else 'Print', titles[state], detail, popup=True)
+        for name in self.all_objects:
+            data = status.get(name, {})
+            if name == 'heater_bed' or re.fullmatch(r'extruder\d*', name) or name.startswith('heater_generic '):
+                target = fval(data.get('target'), float('nan'))
+                heat = heater_state(data)
+                old = self._heating_previous.get(name)
+                if old is not None and heat != 'unknown' and math.isfinite(target):
+                    if old[0] != target and target > 0 and state not in ('printing', 'paused'):
+                        self.record_event('Heating', 'Heating target changed', f'{name}: {target:g} °C', popup=True)
+                    elif old[0] == target and old[1] in ('heating', 'cooling') and heat == 'ready' and target > 0:
+                        self.record_event('Heating', 'Temperature reached', f'{name}: {target:g} °C', popup=True)
+                self._heating_previous[name] = (target, heat)
+            elif name.startswith(('filament_switch_sensor ', 'filament_motion_sensor ')):
+                enabled = data.get('enabled') is True
+                detected = data.get('filament_detected')
+                old = self._sensor_previous.get(name)
+                if enabled and detected is False and old != (enabled, detected) and (old is not None or state in ('printing', 'paused')):
+                    self.record_event('Filament', 'Filament sensor triggered', name, popup=True)
+                self._sensor_previous[name] = (enabled, detected)
+
+    # ---------- Quick actions ----------
+    def quick_catalog(self):
+        catalog = {'page:Dashboard': 'Home', 'page:Print': 'Print', 'page:Temperaturen': 'Preheat',
+                   'cooldown': 'Cooldown', 'home_axes': 'Home axes', 'page:LED Effects': 'Lights', 'page:Makros': 'Macros',
+                   'page:Notifications': 'Alerts', 'page:Network': 'Network', 'lock': 'Clean screen'}
+        if config.has_section('temperature_presets'):
+            for name in config['temperature_presets']:
+                catalog['preset:' + name] = 'Preset: ' + name
+        for name in sorted(self.macro_commands, key=str.casefold):
+            catalog['macro:' + name] = 'Macro: ' + name
+        return catalog
+
+    def quick_choices(self):
+        default = ['page:Dashboard', 'page:Temperaturen', 'page:Print', 'page:Notifications']
+        try:
+            value = json.loads(conf('quick_actions', 'items', json.dumps(default)))
+            if isinstance(value, list):
+                return list(dict.fromkeys(v for v in value if isinstance(v, str)))[:12]
+        except (TypeError, ValueError):
+            pass
+        return default
+
+    def rebuild_quick_bar(self):
+        if not hasattr(self, 'quick_layout'):
+            return
+        self._clear_layout(self.quick_layout)
+        catalog = self.quick_catalog()
+        for key in self.quick_choices():
+            if key not in catalog:
+                continue
+            title = catalog[key].removeprefix('Macro: ').removeprefix('Preset: ')
+            b = button(title, partial(self.run_quick_action, key))
+            b.setMinimumHeight(30 if self.tiny else 36)
+            b.setToolTip(catalog[key])
+            self.quick_layout.addWidget(b)
+        self.quick_layout.addStretch()
+        self.quick_panel.setMinimumWidth(self.quick_layout.minimumSize().width())
+        self.quick_bar.setVisible(flag('quick_actions', 'enabled', True) and self.quick_layout.count() > 1)
+
+    def run_quick_action(self, key):
+        if key.startswith('page:'):
+            page = key[5:]
+            if page in self.pages:
+                self.navigate(page)
+        elif key == 'lock':
+            self.lock_for_cleaning()
+        elif key == 'home_axes':
+            if self.live_print_state() is None or not host_shutdown_allowed(self._live_status):
+                warn(self, 'Home axes', 'Homing shortcut is available only when the printer is confirmed idle.')
+                return
+            if QMessageBox.question(self, 'Home axes', 'Home all axes (G28)?', QMessageBox.Yes | QMessageBox.No, QMessageBox.No) == QMessageBox.Yes and self.live_print_state() is not None and host_shutdown_allowed(self._live_status):
+                self.network.script('G28')
+        elif key == 'cooldown':
+            if not host_shutdown_allowed(self._live_status) or self.live_print_state() is None:
+                warn(self, 'Cooldown', 'Cooldown is available only when the printer is confirmed idle.')
+                return
+            if QMessageBox.question(self, 'Cooldown', 'Turn off all heaters?', QMessageBox.Yes | QMessageBox.No, QMessageBox.No) == QMessageBox.Yes and self.live_print_state() is not None and host_shutdown_allowed(self._live_status):
+                self.network.script('TURN_OFF_HEATERS')
+        elif key.startswith('macro:'):
+            name = key[6:]
+            if self._health_state == 'ready' and name in self.macro_commands:
+                self.confirm_script(self.macro_commands[name], name)
+        elif key.startswith('preset:'):
+            name = key[7:]
+            if self._health_state == 'ready' and config.has_option('temperature_presets', name):
+                self.apply_temp_preset(name, conf('temperature_presets', name))
+
+    def edit_quick_actions(self):
+        dialog = QDialog(self)
+        dialog.setWindowTitle('Quick actions')
+        layout = QVBoxLayout(dialog)
+        enabled = TouchCheckBox('Show quick action bar')
+        enabled.setChecked(flag('quick_actions', 'enabled', True))
+        layout.addWidget(enabled)
+        layout.addWidget(label('Select up to 12. Use Up / Down to reorder.', 'caption'))
+        items = QListWidget()
+        selected = self.quick_choices()
+        catalog = self.quick_catalog()
+        for key in dict.fromkeys(selected + list(catalog)):
+            item = QListWidgetItem(catalog.get(key, key + ' (unavailable)'))
+            item.setData(Qt.UserRole, key)
+            item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
+            item.setCheckState(Qt.Checked if key in selected else Qt.Unchecked)
+            items.addItem(item)
+        QScroller.grabGesture(items.viewport(), QScroller.LeftMouseButtonGesture)
+        layout.addWidget(items, 1)
+        def move(delta):
+            index = items.currentRow()
+            if 0 <= index < items.count() and 0 <= index + delta < items.count():
+                item = items.takeItem(index)
+                items.insertItem(index+delta, item)
+                items.setCurrentRow(index+delta)
+        layout.addLayout(row(button('Up', partial(move, -1)), button('Down', partial(move, 1))))
+        def save():
+            chosen = [items.item(i).data(Qt.UserRole) for i in range(items.count()) if items.item(i).checkState() == Qt.Checked]
+            if len(chosen) > 12:
+                warn(dialog, 'Quick actions', 'Choose at most 12 shortcuts.')
+                return
+            try:
+                set_config('quick_actions', 'items', json.dumps(chosen, ensure_ascii=False))
+                set_config('quick_actions', 'enabled', str(enabled.isChecked()).lower())
+            except OSError as exc:
+                warn(dialog, 'Quick actions', str(exc))
+                return
+            dialog.accept()
+        layout.addLayout(row(button('Cancel', dialog.reject), button('Save', save, True)))
+        fit_dialog(dialog, 540, 460)
+        if dialog.exec_() == QDialog.Accepted:
+            self.rebuild_quick_bar()
+
+    # ---------- Display comfort ----------
+    @staticmethod
+    def find_backlight():
+        root = Path('/sys/class/backlight')
+        try:
+            for dev in sorted(root.iterdir()):
+                try:
+                    if os.access(dev / 'brightness', os.W_OK) and int((dev / 'max_brightness').read_text().strip()) > 0:
+                        return dev
+                except (OSError, ValueError):
+                    continue
+        except (OSError, ValueError):
+            pass
+        return None
+
+    def brightness_percent(self):
+        try:
+            path = self._brightness_path
+            return round(100 * int((path/'brightness').read_text()) / int((path/'max_brightness').read_text())) if path else 100
+        except (OSError, ValueError, ZeroDivisionError):
+            return 100
+
+    def set_brightness(self, percent):
+        if self._brightness_path is None:
+            return False
+        try:
+            maximum = int((self._brightness_path/'max_brightness').read_text())
+            value = max(1, round(maximum * max(5, min(100, percent)) / 100))
+            (self._brightness_path/'brightness').write_text(str(value))
+            return True
+        except (OSError, ValueError):
+            return False
+
+    def make_comfort_settings(self, l):
+        f, c = card('Display comfort')
+        self.comfort_fields = {}
+        for key, title, default, minimum, maximum, decimals in (
+                ('dim_after', 'Dim after (seconds; 0 = off)', 120, 0, 7200, 0),
+                ('off_after', 'Blank after (seconds; 0 = off)', 300, 0, 14400, 0),
+                ('font_scale', 'Font size multiplier (restart UI)', 1, .8, 1.5, 2),
+                ('button_scale', 'Button size multiplier (restart UI)', 1, .8, 1.5, 2)):
+            spin = TouchSpinBox()
+            spin.setRange(minimum, maximum)
+            spin.setDecimals(decimals)
+            spin.setValue(bounded_number(conf('display', key, str(default)), default, minimum, maximum))
+            spin.setProperty('touch_title', title)
+            c.addWidget(label(title))
+            c.addWidget(spin)
+            self.comfort_fields[key] = spin
+        self.keep_display_checkbox = TouchCheckBox('Keep display on while printing / paused')
+        self.keep_display_checkbox.setChecked(flag('display', 'keep_on_print', True))
+        c.addWidget(self.keep_display_checkbox)
+        self.hardware_idle_checkbox = TouchCheckBox('Physical screen off via backlight / X11 DPMS (if supported)')
+        self.hardware_idle_checkbox.setChecked(flag('display', 'hardware_idle', False))
+        self.hardware_idle_checkbox.setEnabled(self._brightness_path is not None or self._dpms_available)
+        c.addWidget(self.hardware_idle_checkbox)
+        c.addWidget(label('Otherwise dimming and blanking use a software overlay. First touch wakes the display. Physical mode is optional and depends on the display driver.', 'caption'))
+        c.addWidget(label('Start page'))
+        self.start_page_combo = QComboBox()
+        for name in self.nav_defaults:
+            self.start_page_combo.addItem(tr(name), name)
+        self.start_page_combo.setCurrentIndex(max(0, self.start_page_combo.findData(conf('display', 'start_page', 'Dashboard'))))
+        c.addWidget(self.start_page_combo)
+        if self._brightness_path is not None:
+            c.addWidget(label('Hardware brightness (%)'))
+            self.brightness_spin = TouchSpinBox()
+            self.brightness_spin.setRange(5, 100)
+            self.brightness_spin.setDecimals(0)
+            self.brightness_spin.setValue(bounded_number(conf('display', 'brightness', str(self.brightness_percent())), self.brightness_percent(), 5, 100))
+            c.addWidget(self.brightness_spin)
+        else:
+            self.brightness_spin = None
+            c.addWidget(label('Hardware brightness unavailable to this user/display. Software dim/blank still works.', 'caption'))
+        self.filament_density_spin = TouchSpinBox()
+        self.filament_density_spin.setDecimals(3)
+        self.filament_density_spin.setRange(0, 30)
+        self.filament_density_spin.setValue(bounded_number(conf('print_view', 'filament_density', '0'), 0, 0, 30))
+        c.addWidget(label('Filament density (g/cm³; 0 = no gram estimate)'))
+        c.addWidget(self.filament_density_spin)
+        c.addWidget(label('Use only for jobs with the same filament diameter and density on all tools.', 'caption'))
+        c.addWidget(button('Save display settings', self.save_comfort_settings, True))
+        c.addWidget(button('Lock screen for cleaning', self.lock_for_cleaning))
+        c.addWidget(label('Cleaning lock is available only when the printer is confirmed idle.', 'caption'))
+        self.comfort_status = label('', 'caption')
+        c.addWidget(self.comfort_status)
+        l.addWidget(f)
+        # History popup categories remain independent from ordinary G-Code confirmation.
+        f, c = card('Notification preferences')
+        self.event_preferences = {}
+        for key, title in (('persist_history', 'Store notification history locally'), ('popup_print', 'Print progress events'),
+                           ('popup_heating', 'Temperature events'), ('popup_filament', 'Filament sensor warnings'),
+                           ('popup_warning', 'Error / warning popups'), ('popup_printer', 'Printer ready events'), ('popup_g_code', 'G-Code responses')):
+            check = TouchCheckBox(title)
+            check.setChecked(flag('notifications', key, True))
+            c.addWidget(check)
+            self.event_preferences[key] = check
+        c.addWidget(button('Save notification preferences', self.save_event_preferences))
+        l.addWidget(f)
+
+    def save_event_preferences(self):
+        try:
+            for key, check in self.event_preferences.items():
+                set_config('notifications', key, str(check.isChecked()).lower())
+            if not flag('notifications', 'persist_history', True):
+                self._history_path.unlink(missing_ok=True)
+            else:
+                self._history_dirty = True
+                self.save_history()
+        except OSError as exc:
+            warn(self, 'Notifications', str(exc))
+
+    def save_comfort_settings(self):
+        try:
+            for key, spin in self.comfort_fields.items():
+                set_config('display', key, f'{spin.value():g}')
+            set_config('display', 'keep_on_print', str(self.keep_display_checkbox.isChecked()).lower())
+            set_config('display', 'hardware_idle', str(self.hardware_idle_checkbox.isChecked()).lower())
+            set_config('display', 'start_page', self.start_page_combo.currentData())
+            set_config('print_view', 'filament_density', f'{self.filament_density_spin.value():g}')
+            if self.brightness_spin is not None:
+                brightness = int(self.brightness_spin.value())
+                if self.set_brightness(brightness):
+                    set_config('display', 'brightness', brightness)
+                else:
+                    warn(self, 'Brightness', 'Could not set hardware brightness.')
+            self.wake_screen()
+            self.comfort_status.setText('Saved. Restart VeloxScreen to apply font and button sizing.')
+        except OSError as exc:
+            warn(self, 'Display comfort', str(exc))
+
+    def dpms_blank(self):
+        """Best-effort X11 power management; never change global OS config."""
+        if not self._dpms_available or self._dpms_off:
+            return
+        try:
+            result = subprocess.run(['xset', '-q'], capture_output=True, text=True, timeout=.8, env={**os.environ, 'LC_ALL': 'C'})
+            if result.returncode or 'DPMS is ' not in result.stdout:
+                return
+            if 'DPMS is Disabled' in result.stdout:
+                result = subprocess.run(['xset', '+dpms'], capture_output=True, timeout=.8)
+                if result.returncode:
+                    return
+                self._dpms_enabled_by_us = True
+            result = subprocess.run(['xset', 'dpms', 'force', 'off'], capture_output=True, timeout=.8)
+            self._dpms_off = result.returncode == 0
+            if not self._dpms_off:
+                self.dpms_wake()
+        except (OSError, subprocess.SubprocessError):
+            self.dpms_wake()
+
+    def dpms_wake(self):
+        if not (self._dpms_off or self._dpms_enabled_by_us):
+            return
+        try:
+            subprocess.run(['xset', 'dpms', 'force', 'on'], capture_output=True, timeout=.8)
+            if self._dpms_enabled_by_us:
+                subprocess.run(['xset', '-dpms'], capture_output=True, timeout=.8)
+        except (OSError, subprocess.SubprocessError):
+            pass
+        self._dpms_off = False
+        self._dpms_enabled_by_us = False
+
+    def check_idle_display(self):
+        if self._shade is None:
+            return
+        if self._health_state != 'ready' or self.live_print_state() is None:
+            if self._shade.isVisible():
+                self.wake_screen()
+            self.release_clean_lock()
+            return
+        if self._clean_lock is not None or QApplication.activeModalWidget() is not None:
+            return
+        if flag('display', 'keep_on_print', True) and self.live_print_state() in ('printing', 'paused'):
+            return
+        idle = time.monotonic() - self._last_input
+        dim = bounded_number(conf('display', 'dim_after', '120'), 120, 0, 7200)
+        off = bounded_number(conf('display', 'off_after', '300'), 300, 0, 14400)
+        opacity = 255 if off > 0 and idle >= off else 150 if dim > 0 and idle >= dim else 0
+        if not opacity:
+            return
+        if not self._shade.isVisible() or self._shade.opacity != opacity:
+            self.hide_notification()
+            self._shade.opacity = opacity
+            self._shade.setGeometry(self.rect())
+            self._shade.show()
+            self._shade.raise_()
+            self._shade.update()
+            if flag('display', 'hardware_idle', False) and self._brightness_path is not None:
+                try:
+                    path = self._brightness_path
+                    if not hasattr(self, '_backlight_restore') or self._backlight_restore is None:
+                        self._backlight_restore = self.brightness_percent()
+                        # Save the restore value before turning off the physical backlight.
+                        set_config('display', 'brightness', max(5, self._backlight_restore))
+                    maximum = int((path/'max_brightness').read_text())
+                    (path/'brightness').write_text('0' if opacity == 255 else str(max(1, round(maximum * self._backlight_restore / 100 * .35))))
+                except (OSError, ValueError):
+                    if opacity == 255:
+                        self.dpms_blank()
+            elif opacity == 255 and flag('display', 'hardware_idle', False):
+                self.dpms_blank()
+
+    def wake_screen(self):
+        self._last_input = time.monotonic()
+        if self._shade is not None and self._shade.isVisible():
+            self._shade.hide()
+        self.dpms_wake()
+        restore = getattr(self, '_backlight_restore', None)
+        if restore is not None and self.set_brightness(max(5, restore)):
+            self._backlight_restore = None
+
+    def eventFilter(self, obj, event):
+        et = event.type()
+        activity = (QEvent.MouseButtonPress, QEvent.MouseButtonRelease, QEvent.TouchBegin, QEvent.TouchEnd, QEvent.KeyPress, QEvent.Wheel)
+        if et in activity:
+            self._last_input = time.monotonic()
+            if self._shade is not None and self._shade.isVisible():
+                # Consume the wake gesture, including the release. Do not click through.
+                if et in (QEvent.MouseButtonRelease, QEvent.TouchEnd, QEvent.KeyPress, QEvent.Wheel):
+                    self.wake_screen()
+                    self._wake_suppress = time.monotonic() + .25
+                return True
+            if time.monotonic() < self._wake_suppress:
+                return True
+        return super().eventFilter(obj, event)
+
+    def lock_for_cleaning(self):
+        if self._clean_lock is not None or self.live_print_state() is None or not host_shutdown_allowed(self._live_status):
+            warn(self, 'Cleaning lock', 'Available only when the printer is confirmed idle.')
+            return
+        self.wake_screen()
+        self.hide_notification()
+        dialog = CleaningLock(self)
+        self._clean_lock = dialog
+        dialog.finished.connect(self.clean_lock_finished)
+        dialog.showFullScreen()
+
+    def clean_lock_finished(self, *_):
+        dialog = self._clean_lock
+        self._clean_lock = None
+        if dialog is not None:
+            dialog.deleteLater()
+        self._last_input = time.monotonic()
+
+    def release_clean_lock(self):
+        if self._clean_lock is not None:
+            self._clean_lock.accept()
+
 
     def make_network(self, l):
         f, c = card('Wi-Fi / NetworkManager')
@@ -3111,6 +4515,13 @@ class Screen(QWidget):
         c.addWidget(label('Reorder blocks, navigation, fans and temperature tiles. Safety controls stay fixed.', 'caption'))
         l.addWidget(f)
         root = l
+        l = self.layout_block('settings_order', root, 'comfort', 'Display comfort')
+        self.make_comfort_settings(l)
+        l = self.layout_block('settings_order', root, 'quick_actions', 'Quick actions')
+        f, c = card('Quick actions')
+        c.addWidget(button('Choose quick actions', self.edit_quick_actions, True))
+        c.addWidget(label('Choose shortcuts and macro favorites for the always-visible bar. Swipe sideways to reach more.', 'caption'))
+        l.addWidget(f)
         l = self.layout_block('settings_order', root, 'jog', 'Manual movement / Jog')
         f, c = card('Manual movement / Jog')
         c.addWidget(label('Reverse the X, Y or Z jog buttons and set their manual move speeds. '
@@ -3332,6 +4743,8 @@ class Screen(QWidget):
         if commands != self.macro_commands:
             self.macro_commands = commands
             self._render_macros()
+            if hasattr(self, 'quick_layout'):
+                self.rebuild_quick_bar()
 
     def _clear_layout(self, layout):
         while layout.count():
@@ -3453,20 +4866,30 @@ class Screen(QWidget):
         QTimer.singleShot(100, self._restart_now)
 
     def _restart_now(self):
+        self.save_history()
+        self.wake_screen()
         # Replaces this process, preserving X11's client PID (no systemd/root needed).
         os.execv(sys.executable, [sys.executable, str(BASE / 'main.py')])
 
     def error(self, msg):
+        self._live_status_at = 0.0
+        if self._z_after_print is not None:
+            self.cancel_z_reminder()
+        self._heating_previous.clear()
+        self._sensor_previous.clear()
+        self.update_job_controls({})
+        self.remaining_label.setText('—')
+        self.eta_label.setText('—')
+        self.print_estimate_info.setText('Status unavailable')
+        self.wake_screen()
+        self.release_clean_lock()
         self.connection.setText(tr('● Verbindung gestört'))
         self._shutdown_idle = False
         self.update_shutdown_button()
         self._print_temp_live = False
-        for reading, target in self.print_temp_widgets.values():
-            reading.setText('-- °C')
-            if target is not None:
-                target.setText(tr('Target') + ' -- °C')
-                target.setEnabled(False)
+        self.clear_heat_status()
         self.log('FEHLER: ' + msg)
+        self.record_event('Warning', 'Request / connection error', msg, popup=True)
 
     def response(self, msg):
         if msg.startswith('__FILES__'):
@@ -3497,6 +4920,10 @@ class Screen(QWidget):
         self.refresh_macros(data['status'])
         self.s = {**self.s, **data['status']}
         st = data['status']
+        self._live_status = st
+        self._live_status_at = time.monotonic()
+        if self._z_save_locked and self._z_save_accepted and live_z_value(st) == 0 and st.get('configfile', {}).get('save_config_pending') is False:
+            self._z_save_locked = False
         self._shutdown_idle = self._health_state == 'ready' and host_shutdown_allowed(st)
         self.update_shutdown_button()
         motion = st.get('motion_report', {})
@@ -3514,10 +4941,19 @@ class Screen(QWidget):
         state = ps.get('state', 'standby')
         previous = self._previous_print_state
         self._previous_print_state = state
-        if state == 'printing' and previous != 'printing' and QApplication.activeModalWidget() is None and (
+        self.check_z_reminder(st, previous)
+        if previous in ('printing', 'paused') and state in ('complete', 'cancelled', 'error'):
+            self.wake_screen()
+        if state in ('printing', 'paused'):
+            self.release_clean_lock()
+            if flag('display', 'keep_on_print', True) and self._shade is not None and self._shade.isVisible():
+                self.wake_screen()
+        if state == 'printing' and previous not in ('printing', 'paused') and QApplication.activeModalWidget() is None and (
                 conf('print_view', 'auto_open', 'true').strip().lower() in ('true', '1', 'yes', 'on')):
             self.navigate('Print')
-        progress = fval(st.get('virtual_sdcard', {}).get('progress')) * 100
+        self.refresh_job(st)
+        self.track_notifications(st, previous)
+        progress = print_progress(st) * 100
         self.print_status_label.setText(str(ps.get('filename') or 'No file') + '  ·  ' + str(state))
         self.print_progress_label.setText(f'{progress:.0f} %')
         for key, value in (('speed', fmt(motion.get('live_velocity'))),
@@ -3540,10 +4976,13 @@ class Screen(QWidget):
         self.update_discovered_tools(st)
         self.update_temps(st)
         self.update_print_temperatures(st)
+        self._temperature_status = st
+        self.update_preset_highlights(st)
         self.update_fans(st)
         self.update_print_fans(st)
         self.update_led_effects(st)
         self.update_calib(st)
+        self.temp_history.sample(st)
 
     def set_text(self, key, text):
         obj = self.s.get(key)
@@ -3603,7 +5042,7 @@ class Screen(QWidget):
             entry = st.get(name, {})
             value.setText(fmt(entry.get('temperature')) + ' °C')
             if name == 'heater_bed' or name == 'extruder' or re.fullmatch(r'extruder\d+', name) or name.startswith('heater_generic '):
-                subtitle.setText(tr('Soll ') + fmt(entry.get('target'), 0) + ' °C')
+                self.show_heater_target(subtitle, entry)
             elif name.startswith('temperature_fan '):
                 subtitle.setText(tr('Temperaturgeregelter Lüfter'))
             else:
@@ -3652,7 +5091,7 @@ class Screen(QWidget):
 
     def update_tool(self, _value=None):
         # Selected tool means setting target extruder for PA; no automatic tool change.
-        pass
+        self.update_preset_highlights(self._temperature_status)
 
     def apply_pa(self):
         extr = self.tool_selector.currentData()
@@ -3701,7 +5140,8 @@ class Screen(QWidget):
         command = 'SAVE_GCODE_STATE NAME=VELOX_EXTRUDE\nM83\nG1 E{:.3f} F{:.0f}\nRESTORE_GCODE_STATE NAME=VELOX_EXTRUDE'.format(amount, speed*60)
         self.confirm_script(command, ('Extrudieren' if direction > 0 else 'Zurückziehen') + f' {length} mm bei {speed} mm/s')
 
-    def apply_temp_preset(self, name, string):
+    def resolve_preset_targets(self, string, st):
+        """Use identical tool/heater selection for commands and live preset highlighting."""
         requested = {}
         for p in string.split(','):
             if ':' in p:
@@ -3710,11 +5150,10 @@ class Screen(QWidget):
                     requested[k.strip().lower()] = float(v.strip())
                 except ValueError:
                     pass
-        st = self.s
         heaters = [n for n in self.all_objects if n == 'extruder' or re.fullmatch(r'extruder\d+',n)
                    or n == 'heater_bed' or n.startswith('heater_generic ')]
         active = st.get('toolhead', {}).get('extruder', 'extruder')
-        commands = []
+        targets = {}
         for purpose, value in requested.items():
             if purpose == 'nozzle':
                 heater = self.tool_selector.currentData() or active
@@ -3732,8 +5171,14 @@ class Screen(QWidget):
                 continue
             cfg = st.get('configfile', {}).get('settings', {}).get(heater, {})
             maximum = fval(cfg.get('max_temp'), 300)
-            if 0 <= value < maximum:
-                commands.append(f'SET_HEATER_TEMPERATURE HEATER={heater.split(" ",1)[-1] if heater.startswith("heater_generic ") else heater} TARGET={value:g}')
+            if math.isfinite(value) and 0 <= value < maximum:
+                targets[heater] = value
+        return targets
+
+    def apply_temp_preset(self, name, string):
+        targets = self.resolve_preset_targets(string, self.s)
+        commands = [f'SET_HEATER_TEMPERATURE HEATER={heater.split(" ",1)[-1] if heater.startswith("heater_generic ") else heater} TARGET={value:g}'
+                    for heater, value in targets.items()]
         if commands:
             self.confirm_script('\n'.join(commands), 'Temperatur-Preset '+name)
         else:
@@ -3790,7 +5235,7 @@ class Screen(QWidget):
             data = st.get(name, {})
             reading.setText(fmt(data.get('temperature')) + ' °C')
             if target is not None:
-                target.setText(tr('Target') + ' ' + fmt(data.get('target'), 0) + ' °C  ✎')
+                self.show_heater_target(target, data, editable=True)
                 maximum = fval(st.get('configfile', {}).get('settings', {}).get(name, {}).get('max_temp'), 0)
                 target.setEnabled(data.get('target') is not None and math.isfinite(maximum) and maximum > 1)
 
@@ -3850,7 +5295,7 @@ class Screen(QWidget):
             data=st.get(name,{})
             reading.setText(fmt(data.get('temperature'))+' °C')
             if name in heaters:
-                target.setText(tr('Soll: ')+fmt(data.get('target'))+' °C')
+                self.show_heater_target(target, data)
             elif name.startswith('temperature_fan '):
                 target.setText(tr('Temp.-Lüfter'))
 
@@ -4074,8 +5519,10 @@ if __name__ == '__main__':
     _, _, scale = display_profile(geometry.width() if geometry is not None else 800,
                                   geometry.height() if geometry is not None else 480,
                                   conf('display', 'ui_scale', 'auto'))
-    app.setFont(QFont('DejaVu Sans', max(9, round(int(conf('appearance', 'font_size', '12')) * scale))))
+    app.setFont(QFont('DejaVu Sans', max(9, round(bounded_number(conf('appearance', 'font_size', '12'), 12, 9, 32) * scale * bounded_number(conf('display', 'font_scale', '1'), 1, .8, 1.5)))))
     win = Screen()
+    app.aboutToQuit.connect(win.save_history)
+    app.aboutToQuit.connect(win.wake_screen)
     if '--windowed' in sys.argv:
         win.show()
     else:

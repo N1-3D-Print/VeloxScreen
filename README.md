@@ -6,9 +6,16 @@
 Responsive layout for small Raspberry Pi touchscreens (experimental 320 × 240 to 1024 × 600). No browser required.
 
 > [!WARNING]
-> **Early Alpha (v0.3.17)** — bugs and incomplete features are expected. Test printer controls carefully. Found an issue? **Please open a GitHub Issue!** Feedback and suggestions are welcome.
+> **Early Alpha (v0.4.1)** — bugs and incomplete features are expected. Test printer controls carefully. Found an issue? **Please open a GitHub Issue!** Feedback and suggestions are welcome.
 
 ## Features
+
+- **Advanced Print Monitor:** large estimated time remaining and finish-at clock, progress, thumbnails, layer count, filament usage, active tool, Pause/Resume/Cancel, live Z adjustment with optional confirmed permanent calibration save and temperature history. The emergency stop stays pinned.
+- **Quick actions:** choose and reorder shortcuts, presets and macro favorites in Settings. Swipe the bar with one finger.
+- **Display comfort:** inactivity dim/blank, optional physical backlight/DPMS, keep-on-print, adjustable font/button sizing, startup page and slide-to-unlock cleaning lock.
+- **Notification center:** filter print, heating, filament, G-Code and warning events; optional local history and configurable popups.
+
+- **Live heating status:** red when heating to a target, green within 2 °C of the target, amber when cooling to a lower target. Matching temperature presets are highlighted on Dashboard and Temperatures; live heater states are shown on Dashboard, Print and Temperatures. Off or unavailable heaters are not highlighted.
 
 - **Custom layout:** reorder page blocks, navigation, fans, temperature tiles, macros and presets in Settings. Optional drag mode or touch-friendly Up/Down buttons; saves per printer.
 
@@ -51,6 +58,10 @@ auto_open = true
 **Emergency Stop:** a red button on the Print page always requires confirmation, regardless of normal command confirmation settings. It calls Moonraker `/printer/emergency_stop` directly, not the normal G-Code queue. It immediately puts Klipper into an emergency shutdown state; recovery will be necessary. Do **not** use it for ordinary pause/cancel actions. 
 
 **Print fans:** only `fan` and `fan_generic` objects are shown, with manual speed controls. `temperature_fan`, `controller_fan`, `heater_fan` and other automatic fans are hidden on Print. The general Control page is unchanged.
+
+## Quality of life
+
+Open **Settings → Display comfort**, **Quick actions**, and **Notification preferences** to customize the new features. Time remaining is estimated from slicer metadata and measured progress, not guaranteed; while paused, finish time is deliberately withheld. Layer information and preview depend on the sliced file and Klipper metadata. Optional grams use the configured material density. The display can dim/blank in software even without backlight support. Physical power management is opt-in and driver-dependent. The cleaning lock requires confirmed idle state and unlocks by a deliberate drag; a new print or fault releases it. See [Quality of life guide](docs/QUALITY_OF_LIFE.md).
 
 ## Display scaling
 

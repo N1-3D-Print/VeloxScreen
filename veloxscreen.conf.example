@@ -86,6 +86,14 @@ image =
 [notifications]
 enabled = true
 duration_seconds = 4
+# Local history (up to 150 entries); turn off to delete persisted history.
+persist_history = true
+popup_print = true
+popup_heating = true
+popup_filament = true
+popup_warning = true
+popup_printer = true
+popup_g_code = true
 
 [overrides]
 # M220 speed and M221 flow limits in percent; UI step sizes are fixed.
@@ -100,8 +108,32 @@ flow_max = 150
 # Seven-inch and five-inch screens with the same pixel resolution look identical to Qt.
 # Optional manual magnification: 0.7 to 1.5 (e.g. 1.15 for a 7-inch screen).
 ui_scale = auto
+# Seconds of inactivity. 0 disables the respective timer.
+dim_after = 120
+off_after = 300
+keep_on_print = true
+# Optional physical backlight / X11 DPMS. Otherwise uses a software overlay.
+hardware_idle = false
+# Optional hardware brightness percent: 5..100 (only if driver permits it).
+# brightness = 80
+font_scale = 1
+button_scale = 1
+start_page = Dashboard
+
+[quick_actions]
+enabled = true
+# IDs are kept stable across languages. Choose and reorder in Settings.
+items = ["page:Dashboard", "page:Temperaturen", "page:Print", "page:Notifications"]
 
 [print_view]
 # Switch to the print page once when Klipper reports a new active print.
 # Users can still navigate away while printing.
 auto_open = true
+
+# Optional single-material density in g/cm³; 0 = show length only.
+filament_density = 0
+
+# Optional: choose scan or tap ONLY after verifying your installed Eddy firmware
+# and actual Z calibration procedure. Empty = permanent Eddy save disabled.
+[babystep]
+eddy_method =

@@ -128,3 +128,15 @@ temperature_order = ["heater_bed", "extruder", "extruder1"]
 ```
 
 Additional keys: `nav_order`, `dashboard_order`, `control_order`, `tools_order`, `temperatures_order`, `macros_order`, `settings_order`, `macro_order`, `preset_order`. The editor writes JSON arrays except `fan_order`, which remains comma-separated for compatibility. Empty values use default order. Unknown IDs are ignored for display; new objects are appended. Fan and temperature order is shared by the relevant pages; the Dashboard still shows its selected subset of temperature tiles, and Print excludes automatic fans. Safety and fault controls cannot be moved. No Klipper configuration or hardware settings are changed.
+
+## Live heating indicators
+
+The UI compares each reported heater temperature with its target: red below target minus 2 °C, green within ±2 °C, amber above target plus 2 °C. A zero target is off; missing data is unknown. These colors describe temperature relative to the target, not instantaneous heater power. A preset is highlighted when all applicable targets match live Klipper data. Only real heaters participate. No configuration changes are needed.
+
+## Quality of life settings (v0.4.0)
+
+See [QUALITY_OF_LIFE.md](QUALITY_OF_LIFE.md) for the new `[display]`, `[quick_actions]`, `[notifications]` and `[print_view]` options. The new settings are optional; old configurations are preserved. Startup page uses stable internal page IDs (choose it from Settings).
+
+## Live Z calibration (v0.4.1)
+
+No change required for supported standard probes or mechanical endstops. For a single standard `[probe_eddy_current ...]` setup, set `[babystep] eddy_method = scan` or `tap` only after verifying the correct method and command support for your firmware. The default is empty, which blocks permanent Eddy saves. See [Z offset saving](Z_OFFSET.md).

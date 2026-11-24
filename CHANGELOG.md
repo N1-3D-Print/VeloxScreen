@@ -1,3 +1,31 @@
+## v0.4.1-alpha — Live Z and calibration save
+
+- Select live Z increments of 0.005, 0.010, 0.025 or 0.050 mm. Show the live G-code Z offset and use Z−/Z+ during active printing with homed Z.
+- Confirm reset to zero on recognized single-tool setups. Reset moves the Z axis; limited to absolute offsets of 0.5 mm or less.
+- Offer permanent calibration saving only for an unambiguous single-tool probe or mechanical Z endstop, and only in confirmed idle/complete state. Validate the live offset, calibration method, pending config and advertised G-code commands again before applying the offset and requesting SAVE_CONFIG.
+- During a print, Save after print arms a temporary reminder, not an automatic save. Require a second explicit confirmation after successful completion; invalidate on changed offset/job, cancellation or connectivity failure. Never restore a reset offset automatically.
+- Eddy scan/tap requires explicit configuration; custom save macros and ambiguous multi-tool setups keep live adjustment only. No direct editing of printer.cfg.
+- No automatic retry after a possibly executed save. Check the console/config after a lost response; uncertain saves are blocked until the UI restarts.
+- Includes v0.4.0 quality-of-life features. 14 dependency-free logic tests; physical printer and native Qt tests still required.
+
+## v0.4.0-alpha — Quality of life
+
+- Prominent estimated remaining time and finish-at local clock, progress bar, slicer thumbnail, layer count, filament length and optional mass estimate, active tool.
+- Pause / Resume / Cancel (confirmed cancel) and live Z adjustment with fresh print-state checks. Emergency stop pinned outside the Print scroller.
+- Bounded 15-minute temperature history for the active nozzle, bed and recognized chamber. Added reorderable print-detail, live-Z and temperature-history blocks.
+- Configurable horizontal quick action bar, including presets, macro favorites, homing/cooldown (idle only), navigation and cleaning lock.
+- Display dim/blank timers, keep-on-print, optional driver-supported backlight/DPMS, startup page and separate font/button sizing. Cleaning lock uses a deliberate swipe, exits when printing starts or a fault occurs.
+- Notification center with filters, optional persisted local history (150 entries), event categories, individual popup preferences, print/temperature/filament and fault events. Existing RESPOND popups retained.
+- Based on v0.3.18. Config and runtime update paths retained. Hardware and native Qt regression testing still required.
+
+## v0.3.18-alpha — Live heating and preset indicators
+
+- Highlight heaters red while heating toward a nonzero target, green within ±2 °C, amber when above the requested target, neutral when off or unavailable.
+- Display explicit target temperatures and heating state on Dashboard, Print and Temperatures, including multi-tool and generic heaters.
+- Highlight matching presets from actual Klipper target values, not a button press. Compare applicable heater targets using the same mapping as the preset command (selected nozzle, bed, chamber). Multiple matching presets may be highlighted; zero-only presets are not highlighted.
+- External commands and manual target changes update the indicators on the next poll. Invalidate indicators on faults and connection errors; read-only sensors are never marked as heating.
+- No new config options or printer control changes. Native Qt hardware testing pending.
+
 ## v0.3.17-alpha — Custom layout editor
 
 - Reorder Dashboard, Print, Control, Tools, Temperatures, Macros and Settings blocks and the navigation menu.
