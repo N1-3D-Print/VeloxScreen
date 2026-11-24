@@ -72,7 +72,7 @@ confirm_commands = true
 confirm_shutdown = true
 ```
 
-Set `confirm_commands` to `false` to remove the normal G-Code prompt. **This does not bypass Klipper safety checks.**
+Set `confirm_commands` to `false` to remove the normal G-Code prompt. `confirm_tool_change`, `confirm_extrusion` and `confirm_filament` independently override it for their respective operations (including Load/Unload All); omitted keys inherit the general setting. `direct_tool_change = true` enables tile-tap activation; set false to restore a separate Activate button. All options are available in Settings → Confirmation dialogs. **This does not bypass Klipper safety checks.**
 
 `confirm_shutdown` independently controls the Settings → Service Control **Shutdown Host** confirmation (default: `true`), also accessible under Settings → Confirmation dialogs. The button only becomes available when a live idle state is confirmed; the state is checked again immediately before the request. Active/paused prints and unknown state remain blocked even with confirmation disabled. Let the hotends cool before shutting down. Moonraker must have permission to shut down its host OS. This does not switch off a separate printer power supply or change M112/recovery confirmations.
 

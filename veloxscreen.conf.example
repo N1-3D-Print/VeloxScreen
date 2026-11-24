@@ -78,6 +78,12 @@ ABS = nozzle:250, bed:100
 [behavior]
 # Turning this off sends commands without an extra confirmation dialog.
 confirm_commands = true
+# Tap a tool tile to run its configured tool-change macro; false = separate Activate button.
+direct_tool_change = true
+# Optional independent confirmations. If omitted, inherit confirm_commands.
+# confirm_tool_change = false
+# confirm_extrusion = false
+# confirm_filament = false
 # Separate confirmation for the Settings host shutdown button.
 confirm_shutdown = true
 

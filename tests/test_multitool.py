@@ -57,14 +57,20 @@ class MultiToolTests(unittest.TestCase):
             self.assertFalse(any(c[0]=='/printer/gcode/script' for c in calls))
     def test_no_motion_from_selection(self):
         calls=[]
-        obj=SimpleNamespace(tool_selector=SimpleNamespace(findData=lambda x:3,setCurrentIndex=lambda i:calls.append(i)))
+        obj=SimpleNamespace(tool_selector=SimpleNamespace(findData=lambda x:3,setCurrentIndex=lambda i:calls.append(i)), filament_idle=lambda:True, direct_tool_change=False, activate_selected_tool=lambda:calls.append('activate'))
         get_method('Screen','select_tool')(obj,'extruder3')
         self.assertEqual(calls,[3])
+        obj.direct_tool_change=True
+        get_method('Screen','select_tool')(obj,'extruder3')
+        self.assertEqual(calls,[3,3,'activate'])
+        obj.filament_idle=lambda:False
+        get_method('Screen','select_tool')(obj,'extruder3')
+        self.assertEqual(calls,[3,3,'activate'])
     def test_all_macro_needs_multiple_tools(self):
         calls=[]
-        obj=SimpleNamespace(filament_idle=lambda:True,tool_selector=SimpleNamespace(currentData=lambda:'extruder'),filament_commands=lambda:{'unload_all':('UNLOAD_ALL','gcode_macro UNLOAD_ALL')},_tool_mapping={'T0':'extruder'},request_toolhead_action=lambda *a,**kw:calls.append((a,kw)))
+        obj=SimpleNamespace(filament_idle=lambda:True,tool_selector=SimpleNamespace(currentData=lambda:'extruder'),filament_commands=lambda:{'unload_all':('UNLOAD_ALL','gcode_macro UNLOAD_ALL')},_tool_mapping={'T0':'extruder'},tool_confirmation={'confirm_filament':False},request_toolhead_action=lambda *a,**kw:calls.append((a,kw)))
         f=get_method('Screen','run_filament_macro')
         f(obj,'unload_all');self.assertFalse(calls)
-        obj._tool_mapping['T1']='extruder1';f(obj,'unload_all');self.assertEqual(calls,[(('UNLOAD_ALL',),{'feature':'gcode_macro UNLOAD_ALL'})])
+        obj._tool_mapping['T1']='extruder1';f(obj,'unload_all');self.assertEqual(calls,[(('UNLOAD_ALL',),{'feature':'gcode_macro UNLOAD_ALL','confirmation':False})])
 
 if __name__=='__main__': unittest.main()

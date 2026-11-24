@@ -48,7 +48,7 @@ exec /usr/bin/openbox --sm-disable
 XINIT
 chmod +x "$HOME/.xinitrc"
 
-bash bash "$ROOT/scripts/migrate-autostart.sh"
+bash "$ROOT/scripts/migrate-autostart.sh"
 
 cat > "$APP/run-veloxscreen.sh" <<'RUNNER'
 #!/usr/bin/env bash

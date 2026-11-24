@@ -1267,6 +1267,14 @@ _ADDED_EN_DE = {
     ('Flow override is global for the G-Code stream, including tool changes.',
      'Flussfaktor gilt global für den G-Code, auch bei Toolwechseln.'),
     ('Confirm host shutdown', 'Herunterfahren bestätigen'),
+    ('Confirm other G-code commands', 'Andere G-Code-Befehle bestätigen'),
+    ('Direct tool change on tap', 'Toolwechsel direkt beim Antippen'),
+    ('Confirm tool changes', 'Toolwechsel bestätigen'),
+    ('Confirm extrusion / retract', 'Extrudieren / Zurückziehen bestätigen'),
+    ('Confirm load / unload', 'Laden / Entladen bestätigen'),
+    ('Tap the tool again to activate it.', 'Tool erneut antippen, um es zu aktivieren.'),
+    ('When direct tool change is off, select a tool and use Activate selected tool.', 'Bei deaktiviertem Direktwechsel Tool auswählen und separat aktivieren.'),
+    ('These options do not disable printer interlocks or emergency confirmations.', 'Diese Optionen deaktivieren keine Druckersperren oder Not-Aus-Bestätigungen.'),
     ('Shutdown Host', 'Host herunterfahren'),
     ('EMERGENCY STOP', 'NOT-AUS'),
     ('Immediately stops Klipper. Requires firmware restart/recovery.', 'Stoppt Klipper sofort. Firmware-Neustart/Wiederherstellung erforderlich.'),
@@ -2960,6 +2968,9 @@ class Screen(QWidget):
             'Z': max(0.1, min(50.0, fval(conf('jog', 'speed_z', '10'), 10))),
         }
         self.confirm_enabled = conf('behavior','confirm_commands','false').strip().lower() in ('true','yes','1','on')
+        self.direct_tool_change = conf('behavior', 'direct_tool_change', 'true').strip().lower() in ('true','yes','1','on')
+        self.tool_confirmation = {key: conf('behavior', key, str(self.confirm_enabled)).strip().lower() in ('true','yes','1','on')
+                                  for key in ('confirm_tool_change', 'confirm_extrusion', 'confirm_filament')}
         self.notifications_enabled = conf('notifications', 'enabled', 'true').strip().lower() in ('true', 'yes', '1', 'on')
         self.notification_duration = int(max(2, min(10, fval(conf('notifications', 'duration_seconds', '4'), 4))))
         self._last_notification = ('', 0.0)
@@ -3052,7 +3063,7 @@ class Screen(QWidget):
             self.pages[name] = self._page(name, builder)
             self.stack.addWidget(self.pages[name])
         nav_layout.addStretch()
-        sl.addWidget(label('v0.4.8 alpha', 'caption'))
+        sl.addWidget(label('v0.4.9 alpha', 'caption'))
         # IMPORTANT: Qt otherwise deletes self.connection and all nav buttons.
         outer.addWidget(sidebar)
         sidebar.setVisible(not self.compact)
@@ -5544,12 +5555,25 @@ class Screen(QWidget):
         l.addWidget(f)
         l = self.layout_block('settings_order', root, 'confirmations', 'Confirmation dialogs')
         f, c = card('Bestätigungsdialoge')
-        self.confirm_checkbox = TouchCheckBox(tr('Vor G-Code-Befehlen bestätigen'))
+        self.confirm_checkbox = TouchCheckBox(tr('Confirm other G-code commands'))
         self.confirm_checkbox.setMinimumHeight(46)
         self.confirm_checkbox.setChecked(self.confirm_enabled)
         self.confirm_checkbox.toggled.connect(self.change_confirmation)
         c.addWidget(self.confirm_checkbox)
-        c.addWidget(label('Aus = Befehle werden beim Tippen direkt gesendet. Ein = Nachfrage vor jedem Befehl. Einstellung bleibt gespeichert.', 'caption'))
+        self.tool_behavior_checkboxes = {}
+        for key, title in (
+                ('direct_tool_change', 'Direct tool change on tap'),
+                ('confirm_tool_change', 'Confirm tool changes'),
+                ('confirm_extrusion', 'Confirm extrusion / retract'),
+                ('confirm_filament', 'Confirm load / unload')):
+            widget = TouchCheckBox(tr(title))
+            widget.setMinimumHeight(40)
+            widget.setChecked(self.direct_tool_change if key == 'direct_tool_change' else self.tool_confirmation[key])
+            widget.toggled.connect(lambda checked, option=key: self.change_tool_behavior(option, checked))
+            self.tool_behavior_checkboxes[key] = widget
+            c.addWidget(widget)
+        c.addWidget(label('When direct tool change is off, select a tool and use Activate selected tool.', 'caption'))
+        c.addWidget(label('These options do not disable printer interlocks or emergency confirmations.', 'caption'))
         self.confirm_shutdown_checkbox = TouchCheckBox(tr('Confirm host shutdown'))
         self.confirm_shutdown_checkbox.setMinimumHeight(40)
         self.confirm_shutdown_checkbox.setChecked(self.confirm_shutdown)
@@ -5673,12 +5697,40 @@ class Screen(QWidget):
         self.confirm_enabled = bool(checked)
         try:
             set_config('behavior', 'confirm_commands', 'true' if checked else 'false')
+            # Old configurations inherit the general setting until independently customized.
+            for key in self.tool_confirmation:
+                if not config.has_option('behavior', key):
+                    self.tool_confirmation[key] = bool(checked)
+                    widget = self.tool_behavior_checkboxes[key]
+                    widget.blockSignals(True)
+                    widget.setChecked(checked)
+                    widget.blockSignals(False)
         except OSError as exc:
             self.confirm_enabled = previous
             self.confirm_checkbox.blockSignals(True)
             self.confirm_checkbox.setChecked(previous)
             self.confirm_checkbox.blockSignals(False)
             warn(self, 'Einstellungen', 'Config konnte nicht gespeichert werden: ' + str(exc))
+
+    def change_tool_behavior(self, key, checked):
+        direct = key == 'direct_tool_change'
+        previous = self.direct_tool_change if direct else self.tool_confirmation[key]
+        try:
+            set_config('behavior', key, 'true' if checked else 'false')
+        except OSError as exc:
+            config.set('behavior', key, 'true' if previous else 'false')
+            widget = self.tool_behavior_checkboxes[key]
+            widget.blockSignals(True)
+            widget.setChecked(previous)
+            widget.blockSignals(False)
+            warn(self, 'Einstellungen', str(exc))
+            return
+        if direct:
+            self.direct_tool_change = bool(checked)
+        else:
+            self.tool_confirmation[key] = bool(checked)
+        # Changing settings must never send a motion command.
+        self.update_filament_controls(self._live_status)
 
     def refresh_macros(self, status):
         settings = status.get('configfile', {}).get('settings', {})
@@ -6050,12 +6102,18 @@ class Screen(QWidget):
                     spin.setValue(received)
 
     def select_tool(self, extruder):
+        # Only an explicit tile tap can initiate a direct change. Polls, settings,
+        # and selector refreshes must never move the printer.
+        if not self.filament_idle():
+            return
         index = self.tool_selector.findData(extruder)
         if index >= 0:
             self.tool_selector.setCurrentIndex(index)
+            if self.direct_tool_change:
+                self.activate_selected_tool()
 
     def update_tool(self, _value=None):
-        # Selection alone never causes motion.
+        # Programmatic selection changes never cause motion.
         self.pa_spin.setProperty('velox_dirty', False)
         self.update_discovered_tools(self._live_status)
         self.update_preset_highlights(self._temperature_status)
@@ -6100,7 +6158,7 @@ class Screen(QWidget):
         self.extrude_len.setEnabled(idle)
         self.extrude_speed.setEnabled(idle)
         tool, macro = self.selected_tool_macro()
-        self.activate_tool_button.setVisible(len(self._tool_mapping) > 1)
+        self.activate_tool_button.setVisible(len(self._tool_mapping) > 1 and not self.direct_tool_change)
         self.activate_tool_button.setText(tr('Activate selected tool'))
         self.activate_tool_button.setEnabled(bool(idle and macro and selected != active))
         self.tool_temperature_button.setEnabled(bool(idle and selected in self._tool_mapping.values()))
@@ -6119,7 +6177,7 @@ class Screen(QWidget):
         if self._toolhead_pending:
             text = (tr('Motion not confirmed') if self._toolhead_uncertain else tr('Motion request in progress')) + ' · ' + self._toolhead_pending.splitlines()[0]
         elif ready and selected and selected != active:
-            text = tr('Activate the selected tool before loading or unloading.')
+            text = tr('Tap the tool again to activate it.' if self.direct_tool_change and macro else 'Activate the selected tool before loading or unloading.')
         elif not ready:
             text = tr('Printer status unavailable')
         elif self._toolhead_feedback:
@@ -6130,7 +6188,7 @@ class Screen(QWidget):
     def activate_selected_tool(self):
         tool, macro = self.selected_tool_macro()
         if self.filament_idle() and macro and self.tool_selector.currentData() != self._live_status.get('toolhead', {}).get('extruder'):
-            self.request_toolhead_action(tool, feature=macro)
+            self.request_toolhead_action(tool, feature=macro, confirmation=self.tool_confirmation['confirm_tool_change'])
 
     def set_selected_tool_temperature(self):
         selected = self.tool_selector.currentData()
@@ -6155,9 +6213,9 @@ class Screen(QWidget):
             return
         if action.endswith('_all'):
             if len(self._tool_mapping) > 1:
-                self.request_toolhead_action(command, feature=macro)
+                self.request_toolhead_action(command, feature=macro, confirmation=self.tool_confirmation['confirm_filament'])
         elif selected and selected == self._live_status.get('toolhead', {}).get('extruder'):
-            self.request_toolhead_action(command, feature='active:' + selected + '|' + macro)
+            self.request_toolhead_action(command, feature='active:' + selected + '|' + macro, confirmation=self.tool_confirmation['confirm_filament'])
 
 
     def apply_pa(self):
@@ -6205,7 +6263,7 @@ class Screen(QWidget):
             return
         amount = length * direction
         command = 'SAVE_GCODE_STATE NAME=VELOX_EXTRUDE\nM83\nG1 E{:.3f} F{:.0f}\nRESTORE_GCODE_STATE NAME=VELOX_EXTRUDE'.format(amount, speed*60)
-        self.request_toolhead_action(command, feature='active:' + extr)
+        self.request_toolhead_action(command, feature='active:' + extr, confirmation=self.tool_confirmation['confirm_extrusion'])
 
     def resolve_preset_targets(self, string, st):
         """Use identical tool/heater selection for commands and live preset highlighting."""
@@ -6609,7 +6667,7 @@ class Screen(QWidget):
         self.animate_toolhead_busy()
         QTimer.singleShot(0, self.network.poll)
 
-    def request_toolhead_action(self, script, axes='', feature='', already_confirmed=False):
+    def request_toolhead_action(self, script, axes='', feature='', already_confirmed=False, confirmation=None):
         if self._toolhead_pending or self.live_print_state() is None or not manual_motion_allowed(self._live_status, axes):
             warn(self, 'Toolhead', 'Manual movement unavailable')
             return
@@ -6618,7 +6676,7 @@ class Screen(QWidget):
             return
         if getattr(self, '_file_start_pending', False):
             return
-        if self.confirm_enabled and not already_confirmed:
+        if (self.confirm_enabled if confirmation is None else confirmation) and not already_confirmed:
             if QMessageBox.question(self, tr('Toolhead'), script + '?', QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
                 return
         # A modal confirmation can outlive the idle state.

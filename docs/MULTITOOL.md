@@ -1,12 +1,24 @@
-# Multi-tool & filament management (v0.4.8 alpha)
+# Multi-tool & filament management (v0.4.9 alpha)
 
 ## Tools page
 
 VeloxScreen discovers Klipper objects named `extruder`, `extruder1`, `extruder2`, etc. The default label is T0 for `extruder` and Tn for `extruderN`. This is a naming convention, not proof of a physical tool's identity. Extruder steppers without independent heaters are not counted as separate tools. Shared-nozzle and custom toolchanger systems may require a separate integration.
 
-Select a tile to choose a target. The blue tile is the active extruder from `toolhead.extruder`; a dot marks the selection. Tap **Activate selected tool** to run an existing matching tool-change macro. It is never inferred from a tap alone. Verify the actual mapping on unusual toolchangers. Klipper status is logical state, not a dock/physical presence sensor.
+By default tap a tile to select and request its configured tool-change macro. Turn off **Direct tool change on tap** in Settings → Confirmation dialogs to select without motion and use **Activate selected tool** instead. The blue tile is the active extruder from `toolhead.extruder`; a dot marks the selection. Programmatic selection changes never trigger motion. Verify the actual mapping on unusual toolchangers. Klipper status is logical state, not a dock/physical presence sensor.
 
 Each tile displays actual / target temperature. The selected heater status is red while heating, green at target, amber while cooling, neutral when off. **Set tool temperature** edits the selected heater, even if it is not active, subject to the configured maximum. Manual extrusion requires a hot active extruder. Load/Unload are enabled only for the selected, active extruder; heating, movement and park details belong to the printer macro.
+
+## Confirmation preferences
+
+Settings → Confirmation dialogs has independent switches for tool changes, extrusion/retract and load/unload (including All). They inherit `confirm_commands` until explicitly configured. Mandatory emergency and recovery confirmations remain unchanged, as do motion guards. Turning off confirmation does not bypass Klipper temperature limits.
+
+```ini
+[behavior]
+direct_tool_change = true
+confirm_tool_change = false
+confirm_extrusion = false
+confirm_filament = false
+```
 
 ## Optional configuration
 

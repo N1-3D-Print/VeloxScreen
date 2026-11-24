@@ -6,15 +6,19 @@
 Responsive layout for small Raspberry Pi touchscreens (experimental 320 × 240 to 1024 × 600). No browser required.
 
 > [!WARNING]
-> **Early Alpha (v0.4.8)** — bugs and incomplete features are expected. Test printer controls carefully. Found an issue? **Please open a GitHub Issue!** Feedback and suggestions are welcome.
+> **Early Alpha (v0.4.9)** — bugs and incomplete features are expected. Test printer controls carefully. Found an issue? **Please open a GitHub Issue!** Feedback and suggestions are welcome.
 
-## What's new in v0.4.8 Alpha
+## What's new in v0.4.9 Alpha
 
-**Multi-tool & filament management** expands the Tools page: discover numbered extruders, select a tool without motion, activate it via an existing configured macro, read individual temperatures and invoke discovered Load / Unload / Load All / Unload All macros. The blue tool is the active extruder reported by Klipper, not simply the selected one. Local tracked operations disable repeated tool/filament actions until completion and a fresh status poll. See [multi-tool setup](docs/MULTITOOL.md).
+Direct tool changes are enabled by default: tap T0/T1/Tn to request its configured macro. Under **Settings → Confirmation dialogs**, disable direct mode to restore the separate Activate button, and independently choose confirmations for tool changes, extrusion/retract and filament load/unload (including All). Existing G-code confirmation settings are inherited until individually customized. Motion/temperature interlocks and mandatory emergency/recovery confirmations remain in place. Fixed a duplicated `bash` in the kiosk installer.
+
+### Previous update: v0.4.8
+
+**Multi-tool & filament management** expands the Tools page: discover numbered extruders, select and activate tools via existing configured macros, read individual temperatures and invoke discovered Load / Unload / Load All / Unload All macros. The blue tool is the active extruder reported by Klipper, not simply the selected one. Local tracked operations disable repeated tool/filament actions until completion and a fresh status poll. See [multi-tool setup](docs/MULTITOOL.md).
 
 ![Multi-tool UI preview](screenshots/11_multitool.png)
 
-*Reconstructed v0.4.8 preview with simulated data and optional configured macros; not a native Qt capture.*
+*Reconstructed v0.4.8 preview with simulated data and optional configured macros (separate Activate mode in v0.4.9); not a native Qt capture.*
 
 ### Previous update: v0.4.7
 

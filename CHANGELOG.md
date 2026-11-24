@@ -1,3 +1,11 @@
+## v0.4.9-alpha — Direct tool controls
+
+- Direct tool changes on tile tap (default); optional separate Activate button.
+- Independent confirmation toggles for tool changes, extrusion/retract and load/unload (including All).
+- Preserve tracked-motion, live-state and active-extruder checks; no motion on programmatic selection refreshes.
+- Fix duplicated `bash` in kiosk installation script.
+- Remote display host separation is not part of this release.
+
 ## v0.4.8-alpha — Multi-tool & filament management
 
 - Detect numbered extruder objects without a four-tool limit, preserve numeric IDs and support explicit `[tools]` and `[tool_commands]` mappings. Distinguish selection from the active extruder reported by Klipper; selecting a tile never moves the printer. Activate through a discovered macro, not raw ACTIVATE_EXTRUDER.
