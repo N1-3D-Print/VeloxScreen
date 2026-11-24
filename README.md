@@ -6,9 +6,12 @@
 Responsive layout for small Raspberry Pi touchscreens (experimental 320 × 240 to 1024 × 600). No browser required.
 
 > [!WARNING]
-> **Early Alpha (v0.4.5)** — bugs and incomplete features are expected. Test printer controls carefully. Found an issue? **Please open a GitHub Issue!** Feedback and suggestions are welcome.
+> **Early Alpha (v0.4.7)** — bugs and incomplete features are expected. Test printer controls carefully. Found an issue? **Please open a GitHub Issue!** Feedback and suggestions are welcome.
 
 ## Features
+
+- **Print Files:** G-code-only thumbnail cards, newest first, six files per page, filename/folder, estimated time (when provided by Moonraker), and confirmed print start. Preview requests run in a bounded background worker; no config files are shown.
+- **Exclude Object:** during printing or pause, tap an object in a proportional XY bed view using Klipper's actual object polygons. Blue = selected, green = currently printing, red hatched = excluded. Fit objects enlarges the occupied area. The normal map uses reported XY travel limits (which may include parking space), not a measured physical bed outline. Center-only objects appear as approximate point markers; objects without coordinates and overlapping footprints can be selected by name in the list. Confirm the one-way `EXCLUDE_OBJECT NAME=...` request separately. Requires `[exclude_object]` in Klipper and G-code containing object definitions (enable object labeling/exclusion in the slicer or Moonraker object processing as appropriate). No automatic config changes.
 
 - **Toolhead control:** Mainsail-inspired XYZ G-code and machine coordinate readouts, homed status per axis, XY directional pad, Z jog, step size, Home all/XY/X/Y/Z, and detected Z-Tilt/QGL in one responsive Control block. Manual movement requires a verified idle printer; jog requires the relevant homed axis. Existing per-axis jog settings and layout ordering are retained. Home buttons are grey until their axes are homed, then blue. A spinning indicator and temporary motion lock show a locally requested homing operation until Klipper responds and fresh status arrives. Visible step buttons default to 50 mm for XYZ; select a smaller increment near travel limits.
 

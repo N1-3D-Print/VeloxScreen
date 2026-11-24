@@ -21,8 +21,8 @@ import urllib.request
 from pathlib import Path
 from functools import partial
 
-from PyQt5.QtCore import Qt, QTimer, QObject, pyqtSignal, QRect, QRectF, QEvent, QEasingCurve, QPropertyAnimation
-from PyQt5.QtGui import QFont, QPainter, QColor, QPen, QPixmap, QLinearGradient, QBrush, QCursor
+from PyQt5.QtCore import Qt, QTimer, QObject, pyqtSignal, QRect, QRectF, QPointF, QEvent, QEasingCurve, QPropertyAnimation
+from PyQt5.QtGui import QFont, QPainter, QColor, QPen, QPixmap, QLinearGradient, QBrush, QCursor, QPolygonF
 from PyQt5.QtWidgets import (
     QApplication, QWidget, QLabel, QPushButton, QVBoxLayout, QHBoxLayout,
     QScrollArea, QFrame, QGridLayout, QStackedWidget, QComboBox, QDoubleSpinBox, QCheckBox,
@@ -335,6 +335,142 @@ def safe_thumbnail_path(filename, relative):
     return '/server/files/gcodes/' + urllib.parse.quote(path, safe='/')
 
 
+def valid_print_path(path):
+    return (isinstance(path, str) and bool(path) and not path.startswith('/')
+            and not any(c in path for c in ('\\', '\r', '\n', '\x00'))
+            and all(part not in ('', '.', '..') for part in path.split('/'))
+            and path.lower().endswith(('.gcode', '.gco')))
+
+
+def print_file_entries(entries):
+    if not isinstance(entries, list):
+        return []
+    unique = {}
+    for item in entries:
+        if isinstance(item, dict) and valid_print_path(item.get('path')):
+            unique[item['path']] = item
+    return sorted(unique.values(), key=lambda item: (fval(item.get('modified'), 0), item['path']), reverse=True)
+
+
+def exclude_objects(status):
+    obj = status.get('exclude_object')
+    if not isinstance(obj, dict) or not isinstance(obj.get('objects'), list):
+        return []
+    excluded = obj.get('excluded_objects', [])
+    if not isinstance(excluded, list):
+        return []
+    names = dict.fromkeys(o['name'] for o in obj['objects'] if isinstance(o, dict)
+                          and isinstance(o.get('name'), str) and o['name'])
+    return [(name, name in excluded, name == obj.get('current_object')) for name in names]
+
+
+def valid_exclude_name(name):
+    # Only single-token names can safely be passed to Klipper extended G-code.
+    return isinstance(name, str) and re.fullmatch(r'[A-Za-z0-9_.:+-]+', name) is not None
+
+
+def exclusion_allowed(status, filename, name, duration):
+    ps = status.get('print_stats', {})
+    now = fval(ps.get('total_duration'), float('nan'))
+    return (bool(filename) and ps.get('filename') == filename
+            and ps.get('state') in ('printing', 'paused')
+            and math.isfinite(now) and math.isfinite(duration) and now >= duration
+            and valid_exclude_name(name)
+            and any(n == name and not excluded for n, excluded, _ in exclude_objects(status)))
+
+
+def object_xy(value):
+    if not isinstance(value, (list, tuple)) or len(value) < 2:
+        return None
+    try:
+        x, y = float(value[0]), float(value[1])
+    except (ValueError, TypeError, OverflowError):
+        return None
+    return (x, y) if all(math.isfinite(v) and abs(v) <= 100000 for v in (x, y)) else None
+
+
+def object_shapes(status):
+    """Keep real Klipper polygons; never invent the footprint of a missing object."""
+    entries = {n: (excluded, current) for n, excluded, current in exclude_objects(status)}
+    shapes = []
+    seen = set()
+    for item in status.get('exclude_object', {}).get('objects', []) if entries else []:
+        if not isinstance(item, dict):
+            continue
+        name = item.get('name')
+        if not isinstance(name, str) or name not in entries or name in seen:
+            continue
+        seen.add(name)
+        raw = item.get('polygon')
+        poly = tuple(object_xy(pt) for pt in raw) if isinstance(raw, (list, tuple)) and 3 <= len(raw) <= 4096 else ()
+        if not poly or None in poly or abs(sum(a[0]*b[1]-a[1]*b[0] for a,b in zip(poly, poly[1:]+poly[:1]))) < 1e-8:
+            poly = ()
+        center = object_xy(item.get('center'))
+        if center is None and poly:
+            center = (sum(x for x,y in poly)/len(poly), sum(y for x,y in poly)/len(poly))
+        if poly or center is not None:
+            shapes.append((name, poly, center, *entries[name]))
+    return tuple(shapes)
+
+
+def object_map_bounds(status, shapes, fit=False):
+    toolhead = status.get('toolhead', {})
+    low, high = object_xy(toolhead.get('axis_minimum')), object_xy(toolhead.get('axis_maximum'))
+    known = not fit and low is not None and high is not None and high[0]>low[0] and high[1]>low[1]
+    points = [pt for _,poly,center,_,_ in shapes for pt in (poly or (center,))]
+    if known:
+        points += [low, high]
+    if not points:
+        return (0., 0., 1., 1.), False
+    x0,y0 = min(x for x,y in points), min(y for x,y in points)
+    x1,y1 = max(x for x,y in points), max(y for x,y in points)
+    # Include all polygons even when configured travel limits are smaller.
+    if not known or x1-x0 < 1 or y1-y0 < 1:
+        pad = max(5., .05*max(x1-x0,y1-y0))
+        x0,y0,x1,y1 = x0-pad,y0-pad,x1+pad,y1+pad
+    return (x0,y0,x1,y1), known
+
+
+def object_map_projection(bounds, width, height):
+    x0,y0,x1,y1 = bounds
+    scale = min(max(1.,width-32)/(x1-x0), max(1.,height-32)/(y1-y0))
+    return scale, (width-(x1-x0)*scale)/2-x0*scale, (height+(y1-y0)*scale)/2+y0*scale
+
+
+def object_map_point(point, projection):
+    scale, ox, oy = projection
+    return (ox+point[0]*scale, oy-point[1]*scale)
+
+
+def object_polygon_contains(point, poly):
+    # Even/odd rule, including a tap directly on an edge.
+    x,y = point
+    inside = False
+    for a,b in zip(poly,poly[1:]+poly[:1]):
+        ax,ay = a; bx,by = b
+        cross = (x-ax)*(by-ay)-(y-ay)*(bx-ax)
+        if abs(cross)<1e-7 and min(ax,bx)-1e-7<=x<=max(ax,bx)+1e-7 and min(ay,by)-1e-7<=y<=max(ay,by)+1e-7:
+            return True
+        if (ay>y)!=(by>y) and x < (bx-ax)*(y-ay)/(by-ay)+ax:
+            inside = not inside
+    return inside
+
+
+def object_map_hits(shapes, projection, point):
+    # Do not silently select one of multiple overlapping objects.
+    # Excluded shapes still count as overlaps, but cannot be selected.
+    hits = []
+    for name,poly,center,excluded,current in shapes:
+        pixels = tuple(object_map_point(pt, projection) for pt in poly)
+        hit = bool(pixels) and object_polygon_contains(point,pixels)
+        if not pixels and center is not None:
+            cx,cy = object_map_point(center,projection)
+            hit = (point[0]-cx)**2+(point[1]-cy)**2 <= 12**2
+        if hit:
+            hits.append(name)
+    return hits
+
+
 def display_style(style, scale):
     out = scaled_style(style, scale * bounded_number(conf('display', 'font_scale', '1'), 1, .8, 1.5))
     factor = bounded_number(conf('display', 'button_scale', '1'), 1, .8, 1.5)
@@ -359,6 +495,10 @@ class Network(QObject):
     live_z_result = pyqtSignal(bool, str)
     z_save_result = pyqtSignal(bool, str)
     motion_result = pyqtSignal(str, bool, str, bool)
+    files_result = pyqtSignal(object, str)
+    file_preview = pyqtSignal(int, str, object, object)
+    file_start_result = pyqtSignal(bool, str)
+    exclude_result = pyqtSignal(bool, str)
 
     def __init__(self, url):
         super().__init__()
@@ -373,6 +513,10 @@ class Network(QObject):
         self._gcode_seen = set()
         self._script_queue = []
         self._script_cv = threading.Condition()
+        self._preview_cv = threading.Condition()
+        self._preview_batch = None
+        self._preview_generation = 0
+        threading.Thread(target=self._file_preview_worker, daemon=True).start()
         threading.Thread(target=self._script_worker, daemon=True).start()
 
     def call(self, path, method='GET', payload=None, timeout=3):
@@ -415,7 +559,7 @@ class Network(QObject):
                     self.objects = discovered.get('result', {}).get('objects', [])
                 requested = [x for x in self.objects if x in (
                     'toolhead', 'motion_report', 'gcode_move', 'print_stats',
-                    'virtual_sdcard', 'heaters', 'bed_mesh',
+                    'virtual_sdcard', 'heaters', 'bed_mesh', 'exclude_object',
                     'firmware_retraction', 'configfile', 'display_status', 'pause_resume')
                     or x == 'extruder' or re.fullmatch(r'extruder\d+', x)
                     or x == 'heater_bed' or x.startswith(('temperature_sensor ', 'heater_generic ',
@@ -474,31 +618,88 @@ class Network(QObject):
                 self._gcode_running = False
         threading.Thread(target=run, daemon=True).start()
 
+    def get_file_preview(self, filename):
+        metadata, thumbnail = {}, b''
+        try:
+            metadata = self.call('/server/files/metadata?' + urllib.parse.urlencode({'filename': filename})).get('result', {})
+            if not isinstance(metadata, dict):
+                metadata = {}
+            choices = [item for item in metadata.get('thumbnails', []) if isinstance(item, dict)]
+            choices.sort(key=lambda item: abs(fval(item.get('width'), 200) - 240))
+            for item in choices:
+                path = safe_thumbnail_path(filename, item.get('relative_path'))
+                if not path:
+                    continue
+                try:
+                    with urllib.request.urlopen(self.url + path, timeout=3) as response:
+                        data = response.read(2 * 1024 * 1024 + 1)
+                    if 0 < len(data) <= 2 * 1024 * 1024:
+                        thumbnail = data
+                        break
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        return metadata, thumbnail
+
     def fetch_print_metadata(self, filename):
         def work():
-            metadata, thumbnail = {}, b''
-            try:
-                metadata = self.call('/server/files/metadata?' + urllib.parse.urlencode({'filename': filename})).get('result', {})
-                if not isinstance(metadata, dict):
-                    metadata = {}
-                choices = [item for item in metadata.get('thumbnails', []) if isinstance(item, dict)]
-                # Prefer a compact thumbnail for small Pi displays; cap the download size.
-                choices.sort(key=lambda item: abs(fval(item.get('width'), 200) - 240))
-                for item in choices:
-                    path = safe_thumbnail_path(filename, item.get('relative_path'))
-                    if not path:
-                        continue
-                    try:
-                        with urllib.request.urlopen(self.url + path, timeout=3) as response:
-                            thumbnail = response.read(2 * 1024 * 1024 + 1)
-                        if len(thumbnail) <= 2 * 1024 * 1024:
-                            break
-                    except Exception:
-                        pass
-                    thumbnail = b''
-            except Exception:
-                pass
+            metadata, thumbnail = self.get_file_preview(filename)
             self.print_metadata.emit(filename, metadata, thumbnail)
+        threading.Thread(target=work, daemon=True).start()
+
+    def request_file_previews(self, generation, filenames):
+        # One serial worker, latest visible page only. No thread per file.
+        with self._preview_cv:
+            self._preview_generation = generation
+            self._preview_batch = (generation, list(filenames))
+            self._preview_cv.notify()
+
+    def _file_preview_worker(self):
+        while True:
+            with self._preview_cv:
+                while self._preview_batch is None:
+                    self._preview_cv.wait()
+                generation, filenames = self._preview_batch
+                self._preview_batch = None
+            for filename in filenames:
+                with self._preview_cv:
+                    if generation != self._preview_generation:
+                        break
+                metadata, thumbnail = self.get_file_preview(filename)
+                self.file_preview.emit(generation, filename, metadata, thumbnail)
+
+    def start_file(self, filename):
+        def work():
+            try:
+                if not valid_print_path(filename):
+                    raise RuntimeError('Invalid print file path.')
+                if self.call('/printer/info').get('result', {}).get('state') != 'ready':
+                    raise RuntimeError('Klipper is not ready.')
+                query = '/printer/objects/query?print_stats&virtual_sdcard'
+                if 'pause_resume' in self.objects:
+                    query += '&pause_resume'
+                status = self.call(query).get('result', {}).get('status', {})
+                if not manual_motion_allowed(status):
+                    raise RuntimeError('Printer is no longer idle.')
+                self.call('/printer/print/start', 'POST', {'filename': filename})
+                self.file_start_result.emit(True, 'Print start accepted.')
+            except Exception as exc:
+                self.file_start_result.emit(False, 'Print start not confirmed; check printer status before retrying: ' + str(exc))
+        threading.Thread(target=work, daemon=True).start()
+
+    def exclude_print_object(self, filename, name, duration):
+        def work():
+            try:
+                if self.call('/printer/info').get('result', {}).get('state') != 'ready':
+                    raise RuntimeError('Klipper is not ready.')
+                status = self.call('/printer/objects/query?print_stats&exclude_object').get('result', {}).get('status', {})
+                if not exclusion_allowed(status, filename, name, duration):
+                    raise RuntimeError('Print or object state changed; no exclusion sent.')
+                self.call('/printer/gcode/script', 'POST', {'script': 'EXCLUDE_OBJECT NAME=' + name})
+                self.exclude_result.emit(True, 'Object exclusion requested: ' + name)
+            except Exception as exc:
+                self.exclude_result.emit(False, 'Exclusion not confirmed; check object status: ' + str(exc))
         threading.Thread(target=work, daemon=True).start()
 
     def print_action(self, action):
@@ -700,9 +901,9 @@ class Network(QObject):
         def run():
             try:
                 result = self.call('/server/files/list?root=gcodes')
-                self.reply.emit('__FILES__' + json.dumps(result.get('result', [])))
+                self.files_result.emit(result.get('result', []), '')
             except Exception as exc:
-                self.err.emit('Files: ' + str(exc))
+                self.files_result.emit([], str(exc))
         threading.Thread(target=run, daemon=True).start()
 
 
@@ -764,7 +965,7 @@ _I18N = [
     ('ACCEL-LIMIT', 'ACCEL LIMIT'),
     ('Temperaturen', 'Temperatures'),
     ('Steuerung', 'Control'),
-    ('Dateien', 'Files'),
+    ('Dateien', 'Print Files'),
     ('Kalibrierung', 'Calibration'),
     ('Konsole', 'Console'),
     ('Makros', 'Macros'),
@@ -836,6 +1037,24 @@ _I18N = [
 _I18N.sort(key=lambda p: len(p[0]), reverse=True)
 
 _ADDED_EN_DE = {
+    ('Print Files', 'Druckdateien'),
+    ('Exclude Object', 'Objekt ausschließen'),
+    ('Bed view', 'Bettansicht'), ('Object list', 'Objektliste'),
+    ('Fit objects', 'Einpassen'), ('Bed / XY', 'Bett / XY'),
+    ('Exclude selected', 'Ausschließen'), ('Tap to select', 'Antippen zum Auswählen'),
+    ('Center markers', 'Mittelpunkte'),
+    ('Exclude selected object', 'Objekt ausschließen'),
+    ('No object geometry. Use List.', 'Keine Objektgeometrie. Liste nutzen.'),
+    ('XY travel / object area', 'XY-Fahrbereich / Objektfläche'),
+    ('Object area (auto fit)', 'Objektfläche (automatisch)'), ('mapped', 'dargestellt'),
+    ('Selected: ', 'Ausgewählt: '),
+    ('Tap an object · Green: printing · Red: excluded', 'Objekt antippen · Grün: Druck · Rot: ausgeschlossen'),
+    ('Overlapping objects. Select the exact name in List.', 'Überlappung. Namen in Liste auswählen.'),
+    ('No preview', 'Keine Vorschau'),
+    ('Previous page', 'Zurück'),
+    ('Next page', 'Weiter'),
+    ('Start print', 'Druck starten'),
+    ('Refresh files', 'Dateien aktualisieren'),
     ('Toolhead', 'Druckkopf'), ('G-code position · mm', 'G-Code-Position · mm'),
     ('Machine', 'Maschine'), ('Not homed', 'Nicht referenziert'), ('Homed', 'Referenziert'),
     ('Homing in progress', 'Referenzierung läuft'), ('Waiting for live axis status', 'Warte auf aktuelle Achsenwerte'),
@@ -1022,6 +1241,8 @@ _ADDED_EN_DE = {
 def tr(message):
     text = str(message)
     if LANGUAGE == 'de':
+        if text == 'Dateien':
+            return 'Druckdateien'
         for english, german in sorted(_ADDED_EN_DE, key=lambda pair: len(pair[0]), reverse=True):
             text = text.replace(english, german)
         return text
@@ -1486,6 +1707,96 @@ class ClickableMetric(QLabel):
             event.accept()
         else:
             super().mouseReleaseEvent(event)
+
+
+class ObjectBedView(QWidget):
+    """Plan view in printer XY coordinates (positive Y up). Selection never sends G-code."""
+    picked = pyqtSignal(str)
+    ambiguous = pyqtSignal()
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.shapes = ()
+        self.bounds = (0.,0.,1.,1.)
+        self.known_bounds = False
+        self.selection = ''
+        self.press = None
+        self.setMinimumHeight(70)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+
+    def set_status(self, shapes, bounds, known):
+        state = (shapes,bounds,known)
+        if state != (self.shapes,self.bounds,self.known_bounds):
+            self.shapes,self.bounds,self.known_bounds = state
+            self.update()
+
+    def set_selection(self, name):
+        name = name or ''
+        if self.selection != name:
+            self.selection = name
+            self.update()
+
+    def projection(self):
+        return object_map_projection(self.bounds,self.width(),self.height())
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        p.fillRect(self.rect(), QColor(THEME['background_color']))
+        if not self.shapes:
+            p.setPen(QColor(text_on(THEME['background_color'])))
+            p.drawText(self.rect(),Qt.AlignCenter,tr('No object geometry. Use List.'))
+            return
+        projection = self.projection()
+        x0,y0,x1,y1 = self.bounds
+        left,bottom = object_map_point((x0,y0),projection)
+        right,top = object_map_point((x1,y1),projection)
+        bed = QRectF(left,top,right-left,bottom-top)
+        p.fillRect(bed,QColor(THEME['overlay_color']))
+        p.setPen(QPen(QColor(THEME['button_color']),1))
+        for i in range(1,10):
+            x = left+(right-left)*i/10
+            y = top+(bottom-top)*i/10
+            p.drawLine(QPointF(x,top),QPointF(x,bottom))
+            p.drawLine(QPointF(left,y),QPointF(right,y))
+        p.setPen(QPen(QColor(text_on(THEME['overlay_color'])),1))
+        p.setBrush(Qt.NoBrush)
+        p.drawRect(bed)
+        p.drawText(QRectF(left,bottom+1,max(10.,right-left),15),Qt.AlignLeft|Qt.AlignVCenter,'X →')
+        p.drawText(QRectF(0,max(0.,top-16),max(30.,left+30),15),Qt.AlignLeft|Qt.AlignVCenter,'Y ↑')
+        for name,poly,center,excluded,current in sorted(self.shapes,key=lambda a:a[0]==self.selection):
+            selected = name==self.selection and not excluded
+            fill = '#75313a' if excluded else '#2866bd' if selected else '#286052' if current else '#52677e'
+            outline = '#ff9da4' if excluded else '#9cd2ff' if selected else '#79e1b0' if current else '#b5c8de'
+            p.setPen(QPen(QColor(outline),2.5 if selected else 1.5))
+            p.setBrush(QBrush(QColor(fill),Qt.BDiagPattern if excluded else Qt.SolidPattern))
+            if poly:
+                polygon = QPolygonF([QPointF(*object_map_point(pt,projection)) for pt in poly])
+                p.drawPolygon(polygon,Qt.OddEvenFill)
+            elif center is not None:
+                cx,cy = object_map_point(center,projection)
+                p.drawEllipse(QPointF(cx,cy),8.,8.)
+            if center is not None and (selected or excluded or current):
+                cx,cy = object_map_point(center,projection)
+                p.setPen(QColor('#ffffff'))
+                p.drawText(QRectF(cx-10,cy-10,20,20),Qt.AlignCenter,'×' if excluded else '✓' if selected else '•')
+
+    def mousePressEvent(self,event):
+        self.press = event.pos() if event.button()==Qt.LeftButton else None
+        event.accept()
+
+    def mouseReleaseEvent(self,event):
+        start,self.press = self.press,None
+        if event.button()!=Qt.LeftButton or start is None or (event.pos()-start).manhattanLength()>14:
+            return
+        hits = object_map_hits(self.shapes,self.projection(),(event.x(),event.y()))
+        if len(hits)>1:
+            self.ambiguous.emit()
+        elif hits:
+            self.picked.emit(hits[0])
+        else:
+            self.picked.emit('')
+        event.accept()
 
 
 class MeshHeatmap(QWidget):
@@ -2474,6 +2785,19 @@ class Screen(QWidget):
         self.network.live_z_result.connect(self.live_z_result)
         self.network.z_save_result.connect(self.z_save_result)
         self.network.motion_result.connect(self.toolhead_motion_result)
+        self.network.files_result.connect(self.receive_files)
+        self.network.file_preview.connect(self.receive_file_preview)
+        self.network.file_start_result.connect(self.file_start_result)
+        self.network.exclude_result.connect(self.object_exclusion_result)
+        self._file_entries = []
+        self._file_cards = {}
+        self._file_generation = 0
+        self._file_page = 0
+        self._file_start_pending = False
+        self._file_start_finished_at = 0.0
+        self._exclude_pending = False
+        self._exclude_finished_at = 0.0
+        self._exclude_dialog = None
         self._toolhead_pending = ''
         self._toolhead_finished_at = 0.0
         self._toolhead_uncertain = False
@@ -2654,7 +2978,7 @@ class Screen(QWidget):
             self.pages[name] = self._page(name, builder)
             self.stack.addWidget(self.pages[name])
         nav_layout.addStretch()
-        sl.addWidget(label('v0.4.5 alpha', 'caption'))
+        sl.addWidget(label('v0.4.7 alpha', 'caption'))
         # IMPORTANT: Qt otherwise deletes self.connection and all nav buttons.
         outer.addWidget(sidebar)
         sidebar.setVisible(not self.compact)
@@ -2821,7 +3145,10 @@ class Screen(QWidget):
         for n, b in self.nav_buttons.items():
             b.setChecked(n == name)
         if name == 'Dateien':
-            self.network.load_files(None)
+            self.reload_print_files()
+        elif self._file_cards:
+            self._file_generation += 1
+            self.network.request_file_previews(self._file_generation, [])
         if name == 'Network':
             self.scan_wifi()
         if name == 'Notifications':
@@ -3154,6 +3481,11 @@ class Screen(QWidget):
         self.print_action_status = label('', 'caption')
         l.addWidget(self.print_action_status)
         l.addWidget(button('Restart / Recovery options', self.open_recovery_menu))
+        self.exclude_button = button('Exclude Object', self.open_exclude_objects)
+        self.exclude_button.setEnabled(False)
+        self.exclude_hint = label('Object exclusion requires [exclude_object] and object-marked G-code.', 'caption')
+        l.addWidget(self.exclude_button)
+        l.addWidget(self.exclude_hint)
 
         root = l
         l = self.layout_block('print_order', root, 'job_details', 'Print details / Preview')
@@ -3728,13 +4060,269 @@ class Screen(QWidget):
         l.addWidget(f)
 
     def make_files(self, l):
-        f, c = card('G-Code-Dateien auf Moonraker')
-        self.files_list = QComboBox()
-        c.addWidget(self.files_list)
-        c.addLayout(row(button('Aktualisieren', lambda:self.network.load_files(None)),
-                        button('Ausgewählten Druck starten', self.print_selected, True)))
-        c.addWidget(label('Upload folgt in der nächsten Version. Datei-Start nur nach Bestätigung.', 'caption'))
+        f, c = card('Print Files')
+        self.files_status = label('Refresh to load G-code files.', 'caption')
+        self.files_status.setTextFormat(Qt.PlainText)
+        c.addWidget(self.files_status)
+        c.addWidget(button('Refresh files', self.reload_print_files))
+        self.file_grid = QGridLayout()
+        self.file_grid.setSpacing(6)
+        self.file_prev = button('Previous page', partial(self.change_file_page, -1))
+        self.file_next = button('Next page', partial(self.change_file_page, 1))
+        self.file_page_label = label('—', 'caption')
+        self.file_page_label.setAlignment(Qt.AlignCenter)
+        c.addLayout(row(self.file_prev, self.file_page_label, self.file_next))
+        c.addLayout(self.file_grid)
+        self.file_prev.setEnabled(False)
+        self.file_next.setEnabled(False)
         l.addWidget(f)
+
+    def reload_print_files(self):
+        if self.busy_files:
+            return
+        self.busy_files = True
+        self.files_status.setText('Loading print files…')
+        self.network.load_files(None)
+
+    def receive_files(self, entries, error):
+        self.busy_files = False
+        self._file_entries = print_file_entries(entries) if not error else []
+        self._file_page = 0
+        self.files_status.setText(('Could not load files: ' + error) if error else f'{len(self._file_entries)} print files · newest first')
+        self.render_file_page()
+
+    def change_file_page(self, delta):
+        self._file_page = max(0, min(max(0, (len(self._file_entries)-1)//6), self._file_page + delta))
+        self.render_file_page()
+
+    def render_file_page(self):
+        self._file_generation += 1
+        self._clear_layout(self.file_grid)
+        self._file_cards = {}
+        pages = max(1, (len(self._file_entries)+5)//6)
+        self.file_page_label.setText(f'{self._file_page+1} / {pages}')
+        self.file_prev.setEnabled(self._file_page > 0)
+        self.file_next.setEnabled(self._file_page+1 < pages)
+        cols = 1 if self.tiny else 2
+        entries = self._file_entries[self._file_page*6:self._file_page*6+6]
+        for i, entry in enumerate(entries):
+            filename = entry['path']
+            panel, c = card()
+            panel.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+            image = label('Loading preview…', 'caption')
+            image.setAlignment(Qt.AlignCenter)
+            image.setFixedHeight(88 if self.tiny else 120)
+            image.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
+            c.addWidget(image)
+            name = label('', 'readout')
+            name.setTextFormat(Qt.PlainText)
+            name.setText(posixpath.basename(filename))
+            name.setToolTip(filename)
+            c.addWidget(name)
+            folder = label('', 'caption')
+            folder.setTextFormat(Qt.PlainText)
+            folder.setText(posixpath.dirname(filename))
+            if posixpath.dirname(filename):
+                c.addWidget(folder)
+            details = label('Estimated time: —', 'caption')
+            c.addWidget(details)
+            start = button('Start print', partial(self.print_selected, filename), True)
+            c.addWidget(start)
+            self._file_cards[filename] = (image, details, start)
+            self.file_grid.addWidget(panel, i//cols, i%cols)
+        self.update_file_controls(self._live_status)
+        if self.stack.currentWidget() == self.pages.get('Dateien'):
+            self.network.request_file_previews(self._file_generation, list(self._file_cards))
+
+    def receive_file_preview(self, generation, filename, metadata, thumbnail):
+        if generation != self._file_generation or filename not in self._file_cards:
+            return
+        image, details, _ = self._file_cards[filename]
+        pix = QPixmap()
+        if thumbnail and pix.loadFromData(thumbnail) and pix.width() <= 4096 and pix.height() <= 4096:
+            image.setPixmap(pix.scaled(180 if self.tiny else 220, image.height(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
+        else:
+            image.setText(tr('No preview'))
+        estimate = fval(metadata.get('estimated_time'), float('nan'))
+        details.setText('Estimated time: ' + duration_text(estimate))
+
+    def update_file_controls(self, status):
+        allowed = (self.live_print_state() is not None and manual_motion_allowed(status)
+                   and not self._file_start_pending and not self._toolhead_pending)
+        for _, _, start in self._file_cards.values():
+            start.setEnabled(allowed)
+
+    def file_start_result(self, accepted, message):
+        self._file_start_finished_at = time.monotonic()
+        self._live_status_at = 0.0
+        self.files_status.setText(message)
+        self.update_file_controls({})
+        if not accepted:
+            self.record_event('Warning', 'Print start not confirmed', message, popup=True)
+        self.network.poll()
+
+    def update_exclusion_controls(self, status):
+        supported = isinstance(status.get('exclude_object'), dict)
+        entries = exclude_objects(status)
+        ready = self.live_print_state() in ('printing', 'paused')
+        available = [name for name, excluded, _ in entries if not excluded and valid_exclude_name(name)]
+        self.exclude_button.setEnabled(ready and bool(available) and not self._exclude_pending)
+        self.exclude_button.setText(tr('Exclude Object') + (f' ({sum(excluded for _, excluded, _ in entries)}/{len(entries)})' if entries else ''))
+        if not supported:
+            hint = 'Object exclusion requires [exclude_object] and object-marked G-code.'
+        elif not entries:
+            hint = 'No named objects reported for this print.'
+        else:
+            hint = f'{len(entries)} objects · {sum(excluded for _, excluded, _ in entries)} excluded'
+        self.exclude_hint.setText(hint)
+        if self._exclude_dialog is not None:
+            ps = status.get('print_stats', {})
+            elapsed = fval(ps.get('total_duration'), float('nan'))
+            if (not ready or ps.get('filename') != self._exclude_dialog.job
+                    or not math.isfinite(elapsed) or elapsed < self._exclude_dialog.last_duration):
+                self._exclude_dialog.reject()
+            else:
+                self._exclude_dialog.last_duration = elapsed
+                self.render_exclude_list(status)
+
+    def render_exclude_list(self, status):
+        d = self._exclude_dialog
+        entries = exclude_objects(status)
+        shapes = object_shapes(status)
+        bounds, known = object_map_bounds(status, shapes, d.fit_objects)
+        d.bed.set_status(shapes, bounds, known)
+        mapped = {name for name, *_ in shapes}
+        d.map_tab.setEnabled(bool(shapes))
+        if not shapes:
+            d.views.setCurrentIndex(1)
+        d.map_info.setText(tr('XY travel / object area' if known else 'Object area (auto fit)') +
+                           f' · {len(mapped)}/{len(entries)} ' + tr('mapped') +
+                           (' · ' + tr('Center markers') if any(not poly for _, poly, *_ in shapes) else ''))
+        signature = (tuple(entries), tuple(sorted(mapped)))
+        if signature == d.signature:
+            return
+        d.signature = signature
+        selected_items = d.objects.selectedItems()
+        selected = selected_items[0].data(Qt.UserRole) if selected_items else None
+        d.objects.blockSignals(True)
+        d.objects.clear()
+        for name, excluded, current in entries:
+            suffix = ' · EXCLUDED' if excluded else ' · Unsupported name' if not valid_exclude_name(name) else ' · Printing now' if current else ''
+            if name not in mapped:
+                suffix += ' · List only'
+            item = QListWidgetItem(name + suffix)
+            item.setData(Qt.UserRole, name)
+            if excluded or not valid_exclude_name(name):
+                item.setFlags(item.flags() & ~Qt.ItemIsSelectable & ~Qt.ItemIsEnabled)
+            d.objects.addItem(item)
+            if selected == name and item.flags() & Qt.ItemIsSelectable:
+                d.objects.setCurrentItem(item)
+        d.objects.blockSignals(False)
+        d.sync_selection()
+
+    def open_exclude_objects(self):
+        if self._exclude_pending or self.live_print_state() not in ('printing', 'paused'):
+            return
+        ps = self._live_status.get('print_stats', {})
+        filename = ps.get('filename')
+        duration = fval(ps.get('total_duration'), float('nan'))
+        d = QDialog(self)
+        d.setWindowTitle(tr('Exclude Object'))
+        fit_dialog(d, 650, 460)
+        d.job = filename
+        d.last_duration = duration
+        d.signature = None
+        d.fit_objects = False
+        c = QVBoxLayout(d)
+        c.setContentsMargins(6, 5, 6, 5)
+        c.setSpacing(3)
+        d.map_tab = button('Bed view', lambda: d.views.setCurrentIndex(0))
+        list_tab = button('Object list', lambda: d.views.setCurrentIndex(1))
+        def fit_toggle():
+            d.fit_objects = not d.fit_objects
+            fit_button.setText(tr('Bed / XY' if d.fit_objects else 'Fit objects'))
+            self.render_exclude_list(self._live_status)
+            if d.map_tab.isEnabled():
+                d.views.setCurrentIndex(0)
+        fit_button = button('Fit objects', fit_toggle)
+        c.addLayout(row(d.map_tab, list_tab, fit_button))
+        d.views = QStackedWidget()
+        d.bed = ObjectBedView()
+        d.views.addWidget(d.bed)
+        d.objects = QListWidget()
+        d.objects.setWordWrap(True)
+        d.objects.setStyleSheet('QListWidget::item { padding: 8px; }')
+        QScroller.grabGesture(d.objects.viewport(), QScroller.LeftMouseButtonGesture)
+        d.views.addWidget(d.objects)
+        c.addWidget(d.views, 1)
+        d.map_info = label('', 'caption')
+        c.addWidget(d.map_info)
+        selection = label('', 'caption')
+        selection.setTextFormat(Qt.PlainText)
+        selection.setWordWrap(False)
+        selection.setSizePolicy(QSizePolicy.Ignored,QSizePolicy.Fixed)
+        c.addWidget(selection)
+        confirm = button('Exclude selected' if self.tiny else 'Exclude selected object', d.accept)
+        confirm.setObjectName('danger')
+        confirm.setEnabled(False)
+        close = button('Close', d.reject)
+        for b in (confirm,close,d.map_tab,list_tab,fit_button):
+            if self.tiny:
+                b.setMinimumHeight(27)
+                b.setStyleSheet('QPushButton { min-height: 22px; padding: 2px; }')
+        c.addLayout(row(close, confirm))
+
+        def sync_selection():
+            items = d.objects.selectedItems()
+            item = items[0] if items else None
+            name = item.data(Qt.UserRole) if item else None
+            d.bed.set_selection(name)
+            confirm.setEnabled(bool(name) and bool(item.flags() & Qt.ItemIsSelectable))
+            selection.setText(tr('Selected: ') + name if name else tr('Tap to select' if self.tiny else 'Tap an object · Green: printing · Red: excluded'))
+            selection.setToolTip(name or '')
+        d.sync_selection = sync_selection
+        d.objects.itemSelectionChanged.connect(sync_selection)
+
+        def pick(name):
+            d.objects.clearSelection()
+            for i in range(d.objects.count()):
+                item = d.objects.item(i)
+                if item.data(Qt.UserRole)==name and item.flags() & Qt.ItemIsSelectable:
+                    d.objects.setCurrentItem(item)
+                    item.setSelected(True)
+                    break
+            sync_selection()
+
+        def overlap():
+            pick('')
+            d.views.setCurrentIndex(1)
+            selection.setText(tr('Overlapping objects. Select the exact name in List.'))
+
+        d.bed.picked.connect(pick)
+        d.bed.ambiguous.connect(overlap)
+        self._exclude_dialog = d
+        self.render_exclude_list(self._live_status)
+        result = d.exec_()
+        items = d.objects.selectedItems()
+        name = items[0].data(Qt.UserRole) if items else None
+        self._exclude_dialog = None
+        duration = d.last_duration
+        if result != QDialog.Accepted or not exclusion_allowed(self._live_status, filename, name, duration):
+            return
+        if QMessageBox.question(self, tr('Exclude Object'), 'Permanently skip this object in the current print?\n\n' + name, QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
+            return
+        if self.live_print_state() not in ('printing', 'paused') or not exclusion_allowed(self._live_status, filename, name, duration):
+            return
+        self._exclude_pending = True
+        self.update_exclusion_controls(self._live_status)
+        self.network.exclude_print_object(filename, name, duration)
+
+    def object_exclusion_result(self, accepted, message):
+        self._exclude_finished_at = time.monotonic()
+        self._live_status_at = 0.0
+        self.update_exclusion_controls({})
+        self.record_event('Printer' if accepted else 'Warning', 'Object exclusion', message, popup=True)
+        self.network.poll()
 
     def make_calib(self, l):
         f, c = card('Bed Mesh')
@@ -3972,6 +4560,8 @@ class Screen(QWidget):
         self.z_save_hint.setText(('Verify the last save in printer.cfg and restart VeloxScreen before retrying.' if self._z_save_locked else ('Method: ' + candidate['method'] + ' · ' + f"{candidate['z']:+.3f} mm") if candidate else reason))
         self.z_cancel_button.setVisible(self._z_after_print is not None)
         self.z_cancel_button.setEnabled(self._z_after_print is not None and not self._z_save_pending)
+        self.update_exclusion_controls(status)
+        self.update_file_controls(status)
 
     def refresh_job(self, status):
         ps = status.get('print_stats', {})
@@ -5147,17 +5737,7 @@ class Screen(QWidget):
         self.record_event('Warning', 'Request / connection error', msg, popup=True)
 
     def response(self, msg):
-        if msg.startswith('__FILES__'):
-            try:
-                files = json.loads(msg[len('__FILES__'):])
-                self.files_list.clear()
-                for f in sorted(files, key=lambda x: x.get('modified', 0), reverse=True):
-                    if f.get('path', '').lower().endswith(('.gcode', '.gco')):
-                        self.files_list.addItem(f['path'])
-            except Exception as exc:
-                self.error(str(exc))
-        else:
-            self.log(msg)
+        self.log(msg)
 
     def log(self, text):
         self.console.appendPlainText(text)
@@ -5177,6 +5757,11 @@ class Screen(QWidget):
         st = data['status']
         self._live_status = st
         self._live_status_at = time.monotonic()
+        for prefix in ('_file_start', '_exclude'):
+            finished = getattr(self, prefix + '_finished_at')
+            if finished and data.get('poll_started', 0) >= finished:
+                setattr(self, prefix + '_pending', False)
+                setattr(self, prefix + '_finished_at', 0.0)
         # Never use a poll begun before command completion as the final homed state.
         if self._toolhead_finished_at and not self._toolhead_uncertain and data.get('poll_started', 0) >= self._toolhead_finished_at:
             self._toolhead_pending = ''
@@ -5850,11 +6435,18 @@ class Screen(QWidget):
     def mesh_point_selected(self, col, row, value):
         self.mesh_cell_info.setText(f'X index: {col + 1}   ·   Y index: {row + 1}   ·   Z: {value:+.4f} mm')
 
-    def print_selected(self):
-        filename = self.files_list.currentText()
-        if not filename:
+    def print_selected(self, filename):
+        if (not valid_print_path(filename) or self._file_start_pending or self._toolhead_pending
+                or self.live_print_state() is None or not manual_motion_allowed(self._live_status)):
             return
-        self.confirm_script('SDCARD_PRINT_FILE FILENAME="' + filename.replace('"','') + '"', 'Druck starten: '+filename)
+        if QMessageBox.question(self, tr('Start print'), 'Start printing this file?\n\n' + filename,
+                                QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
+            return
+        if self._file_start_pending or self.live_print_state() is None or not manual_motion_allowed(self._live_status) or self._toolhead_pending:
+            return
+        self._file_start_pending = True
+        self.update_file_controls(self._live_status)
+        self.network.start_file(filename)
 
     def send_console(self):
         cmd = self.console_input.text().strip()

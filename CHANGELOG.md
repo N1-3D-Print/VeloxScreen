@@ -1,3 +1,17 @@
+## v0.4.7-alpha — Graphical Exclude Object
+
+- Add a touch-selectable XY bed map to the existing Print / Exclude Object dialog. Draw real Klipper object polygons at equal X/Y scale, with Y increasing upwards, and show selection (blue), current object (green) and excluded objects (red hatch). Selection does not issue a command.
+- Use reported XY travel limits and expand to include object geometry. Fit objects zooms to the occupied area. The map is a coordinate view, not an exact physical plate outline. Center-only metadata uses point markers; missing geometry and overlapping tap targets retain the named list fallback. Keep list and map selections synchronized.
+- Retain explicit confirmation and fresh printer/job/object checks before exclusion; close the live selection dialog on job change or observed timer rollback. No new dependencies or config migration.
+- 41 dependency-free tests passed (including eight new geometry and hit-testing tests). Native Qt, touchscreen and printer tests remain pending.
+
+## v0.4.6-alpha — Print Files and Exclude Object
+
+- Rename the Files navigation label to Print Files (German: Druckdateien), retaining the existing page ID for saved layouts, shortcuts and startup page. Replace the file dropdown with responsive thumbnail cards, six files per page, newest first, with filename, folder, and estimated print time where available. Missing previews remain selectable. Use a single background preview worker with a bounded download size and discard outdated page results.
+- Start prints using the Moonraker filename endpoint after explicit confirmation and a fresh ready/idle check. Do not automatically retry unconfirmed requests. File-list errors no longer invalidate unrelated printer status.
+- Poll Klipper's optional exclude_object status. Show a live named-object list in Print, mark the current and excluded objects, and require confirmation before sending an exclusion. Reject invalid names, stale or changed job state, and already-excluded objects. Enable during printing or pause only. Requires object-marked G-code and [exclude_object]; no configuration migration. No graphical bed map yet.
+- 33 dependency-free tests passed. Native Qt and printer tests pending.
+
 ## v0.4.5-alpha — Homing feedback and visible jog steps
 
 - Replace the jog step dropdown with always-visible, exclusive step buttons; start at 50 mm each app launch, including existing custom step lists. The selected step applies to XYZ. Wrap into rows on tiny displays.
