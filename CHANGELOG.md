@@ -1,3 +1,10 @@
+## v0.4.5-alpha — Homing feedback and visible jog steps
+
+- Replace the jog step dropdown with always-visible, exclusive step buttons; start at 50 mm each app launch, including existing custom step lists. The selected step applies to XYZ. Wrap into rows on tiny displays.
+- Grey homing buttons until the associated axes are reported homed; blue after live confirmation. Apply to Control and Dashboard. This is Klipper homed status, not electrical motor feedback.
+- Animate locally requested homing on the button and in a status line; temporarily block repeated homing and manual jog during the operation. Wait for the command and M400 plus a new status poll. Dashboard and quick home share the guarded dispatch. External homing is reflected in live axis status, but not tracked as a local command.
+- Show failures without auto-retry. If the network response is uncertain, require a printer state reset or a verified operator/UI restart before more local toolhead motion. No configuration migration. Native Qt and hardware testing pending.
+
 ## v0.4.4-alpha — Unified Toolhead control
 
 - Combine XYZ G-code coordinates, machine coordinates and per-axis homed status with XY/Z jog, step size, Home all/XY/X/Y/Z and Motors Off in the existing reorderable Control jog block. Coordinates are reported commanded positions, not encoder measurements; clear stale values on a fault or connection error.

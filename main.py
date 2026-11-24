@@ -27,7 +27,7 @@ from PyQt5.QtWidgets import (
     QApplication, QWidget, QLabel, QPushButton, QVBoxLayout, QHBoxLayout,
     QScrollArea, QFrame, QGridLayout, QStackedWidget, QComboBox, QDoubleSpinBox, QCheckBox,
     QLineEdit, QPlainTextEdit, QMessageBox, QInputDialog, QSplitter, QSizePolicy, QDialog, QScroller, QScrollerProperties, QSlider,
-    QGraphicsOpacityEffect, QListWidget, QListWidgetItem, QAbstractItemView, QProgressBar
+    QGraphicsOpacityEffect, QListWidget, QListWidgetItem, QAbstractItemView, QProgressBar, QButtonGroup
 )
 
 BASE = Path(__file__).resolve().parent
@@ -179,6 +179,22 @@ def toolhead_coordinates(status):
     return {axis: (coordinate(gm.get('gcode_position'), i), coordinate(machine, i),
                    axis.lower() in homed if isinstance(homed, str) else False)
             for i, axis in enumerate('XYZ')}
+
+
+def jog_step_values(values):
+    """Keep configured steps, always offer the requested 50 mm startup default."""
+    return sorted({float(v) for v in values if math.isfinite(v) and v > 0} | {50.0})
+
+
+def homing_axes(script):
+    return {'G28': 'xyz', 'G28 X Y': 'xy', 'G28 X': 'x',
+            'G28 Y': 'y', 'G28 Z': 'z'}.get(script, '')
+
+
+def homing_visual_state(script, status, ready, busy):
+    axes = homing_axes(script)
+    homed = status.get('toolhead', {}).get('homed_axes', '')
+    return 'homed' if ready and not busy and axes and isinstance(homed, str) and all(a in homed for a in axes) else 'neutral'
 
 
 def manual_motion_allowed(status, axes=''):
@@ -342,6 +358,7 @@ class Network(QObject):
     print_action_result = pyqtSignal(str, bool, str)
     live_z_result = pyqtSignal(bool, str)
     z_save_result = pyqtSignal(bool, str)
+    motion_result = pyqtSignal(str, bool, str, bool)
 
     def __init__(self, url):
         super().__init__()
@@ -370,6 +387,7 @@ class Network(QObject):
         if self._running:
             return
         self._running = True
+        poll_started = time.monotonic()
 
         def run():
             try:
@@ -408,7 +426,8 @@ class Network(QObject):
                 self._tick += 1
                 self.data.emit({'objects': self.objects,
                                 'status': payload.get('result', {}).get('status', {}),
-                                'timestamp': payload.get('result', {}).get('eventtime', 0)})
+                                'timestamp': payload.get('result', {}).get('eventtime', 0),
+                                'poll_started': poll_started})
             except Exception as exc:
                 self.err.emit(str(exc))
             finally:
@@ -625,10 +644,10 @@ class Network(QObject):
                                       if coalesce_key(cmd) != key] + [script]
             self._script_cv.notify()
 
-    def manual_motion(self, script, axes='', required_object=''):
+    def manual_motion(self, script, axes='', required_object='', tracked=False):
         # Same FIFO as other G-code. Recheck immediately before dispatch, not just on tap.
         with self._script_cv:
-            self._script_queue.append((script, axes, required_object))
+            self._script_queue.append((script, axes, required_object, tracked))
             self._script_cv.notify()
 
     def run_manual_motion(self, script, axes, required_object):
@@ -655,17 +674,26 @@ class Network(QObject):
                 while not self._script_queue:
                     self._script_cv.wait()
                 script = self._script_queue.pop(0)
+            tracked = False
             try:
                 if isinstance(script, tuple):
-                    script, axes, required_object = script
-                    response = self.run_manual_motion(script, axes, required_object)
+                    script, axes, required_object, tracked = script
+                    # Await the final queued moves too (custom homing/calibration macros).
+                    command = script + '\nM400' if tracked and script != 'M84' else script
+                    response = self.run_manual_motion(command, axes, required_object)
+                    if tracked:
+                        self.motion_result.emit(script, True, '', False)
                 else:
                     response = self.call('/printer/gcode/script', 'POST', {'script': script})
                 # Do not flood the console with every intermediate slider value.
                 if not script.startswith(('M106 S', 'SET_FAN_SPEED FAN=')):
                     self.reply.emit('OK  ' + script.replace('\n', ' | ') + '  ' + str(response.get('result', '')))
             except Exception as exc:
-                self.err.emit('G-Code: ' + str(exc))
+                if tracked:
+                    uncertain = isinstance(exc, (TimeoutError, ConnectionError, urllib.error.URLError)) and not isinstance(exc, urllib.error.HTTPError)
+                    self.motion_result.emit(script, False, str(exc), uncertain)
+                else:
+                    self.err.emit('G-Code: ' + str(exc))
 
     def load_files(self, success):
         # Callbacks are only invoked via a Qt signal from worker to GUI.
@@ -810,6 +838,9 @@ _I18N.sort(key=lambda p: len(p[0]), reverse=True)
 _ADDED_EN_DE = {
     ('Toolhead', 'Druckkopf'), ('G-code position · mm', 'G-Code-Position · mm'),
     ('Machine', 'Maschine'), ('Not homed', 'Nicht referenziert'), ('Homed', 'Referenziert'),
+    ('Homing in progress', 'Referenzierung läuft'), ('Waiting for live axis status', 'Warte auf aktuelle Achsenwerte'),
+    ('Check printer and restart VeloxScreen before further manual motion.', 'Drucker prüfen und VeloxScreen vor weiteren manuellen Bewegungen neu starten.'),
+    ('Motion request in progress', 'Bewegungsbefehl läuft'), ('Motion not confirmed', 'Bewegungsbefehl nicht bestätigt'),
     ('Step · mm', 'Schrittweite · mm'), ('Home all', 'Alle referenzieren'), ('Home XY', 'XY referenzieren'),
     ('Manual movement unavailable', 'Manuelle Bewegung nicht verfügbar'),
     ('Manual movement requires an idle printer. Home axes before jogging.', 'Manuelle Bewegung nur im Leerlauf. Achsen vorher referenzieren.'),
@@ -2442,6 +2473,16 @@ class Screen(QWidget):
         self.network.print_action_result.connect(self.print_action_result)
         self.network.live_z_result.connect(self.live_z_result)
         self.network.z_save_result.connect(self.z_save_result)
+        self.network.motion_result.connect(self.toolhead_motion_result)
+        self._toolhead_pending = ''
+        self._toolhead_finished_at = 0.0
+        self._toolhead_uncertain = False
+        self._toolhead_feedback = ''
+        self._homing_frame = 0
+        self.dashboard_home_buttons = {}
+        self._homing_timer = QTimer(self)
+        self._homing_timer.setInterval(160)
+        self._homing_timer.timeout.connect(self.animate_toolhead_busy)
         self._z_pending = False
         self._z_save_pending = False
         self._z_save_locked = False
@@ -2538,6 +2579,7 @@ class Screen(QWidget):
         self._notification_timer.setSingleShot(True)
         self._notification_timer.timeout.connect(self.hide_notification)
         self._build()
+        self.update_toolhead_control({})
         self._build_notification_banner()
         self._shade = ScreenShade(self)
         QApplication.instance().installEventFilter(self)
@@ -2612,7 +2654,7 @@ class Screen(QWidget):
             self.pages[name] = self._page(name, builder)
             self.stack.addWidget(self.pages[name])
         nav_layout.addStretch()
-        sl.addWidget(label('v0.4.4 alpha', 'caption'))
+        sl.addWidget(label('v0.4.5 alpha', 'caption'))
         # IMPORTANT: Qt otherwise deletes self.connection and all nav buttons.
         outer.addWidget(sidebar)
         sidebar.setVisible(not self.compact)
@@ -3260,6 +3302,10 @@ class Screen(QWidget):
         self._health_state = state
         self._health_message = message
         if state != 'ready':
+            if state in ('shutdown', 'startup', 'error') and self._toolhead_uncertain:
+                self._toolhead_uncertain = False
+                self._toolhead_pending = ''
+                self._toolhead_finished_at = 0.0
             self._live_status_at = 0.0
             if self._z_after_print is not None:
                 self.cancel_z_reminder()
@@ -3482,10 +3528,17 @@ class Screen(QWidget):
         bar = QHBoxLayout()
         for axis in ['X', 'Y', 'Z', 'XY', 'ALLE']:
             cmd = 'G28' if axis == 'ALLE' else 'G28 ' + (axis if axis != 'XY' else 'X Y')
-            bar.addWidget(button(axis, partial(self.confirm_script, cmd, 'Homing '+axis)))
+            b = button(axis, lambda checked=False, cmd=cmd: self.request_toolhead_action(cmd))
+            b.setProperty('homeLabel', b.text())
+            b.setEnabled(False)
+            self.dashboard_home_buttons[cmd] = b
+            bar.addWidget(b)
         c.addLayout(bar)
         self.s['homed'] = label('Referenzierung: --', 'caption')
         c.addWidget(self.s['homed'])
+        self.dashboard_homing_status = label('', 'caption')
+        self.dashboard_homing_status.hide()
+        c.addWidget(self.dashboard_homing_status)
         l.addWidget(f)
 
     def make_tools(self, l):
@@ -3581,9 +3634,24 @@ class Screen(QWidget):
             positions.setColumnStretch(i, 1)
             self.toolhead_position_labels[axis] = (name, value, machine)
         c.addLayout(positions)
-        self.jog_step = QComboBox()
-        self.jog_step.addItems([str(int(v)) if int(v)==v else str(v) for v in options('extrusion', 'jog_steps', '1, 5, 15, 25, 50')])
-        c.addLayout(row(label('Step · mm'), self.jog_step))
+        self.jog_step = 50.0
+        self.jog_step_buttons = {}
+        self.jog_step_group = QButtonGroup(self)
+        self.jog_step_group.setExclusive(True)
+        c.addWidget(label('Step · mm', 'caption'))
+        steps = QGridLayout()
+        steps.setSpacing(4)
+        columns = 3 if self.tiny else 5
+        for i, step in enumerate(jog_step_values(options('extrusion', 'jog_steps', '1, 5, 15, 25, 50'))):
+            b = button(f'{step:g}', lambda checked=False, step=step: self.select_jog_step(step))
+            b.setCheckable(True)
+            self.jog_step_group.addButton(b)
+            self.jog_step_buttons[step] = b
+            steps.addWidget(b, i // columns, i % columns)
+        for col in range(columns):
+            steps.setColumnStretch(col, 1)
+        c.addLayout(steps)
+        self.select_jog_step(50.0)
         self.toolhead_jog_buttons = {}
         self.toolhead_action_buttons = {}
         movement = QGridLayout()
@@ -3600,7 +3668,9 @@ class Screen(QWidget):
         homing = QGridLayout()
         homing.setSpacing(5)
         def add_action(text, script, r, col, span=1, axes='', feature=''):
-            b = button(text, partial(self.request_toolhead_action, script, axes, feature), True)
+            b = button(text, lambda checked=False: self.request_toolhead_action(script, axes, feature), not bool(homing_axes(script)))
+            if homing_axes(script):
+                b.setProperty('homeLabel', b.text())
             b.setEnabled(False)
             if feature:
                 b.hide()
@@ -3617,6 +3687,9 @@ class Screen(QWidget):
         controls.addLayout(movement, 1)
         controls.addLayout(homing, 1)
         c.addLayout(controls)
+        self.toolhead_busy_label = label('', 'caption')
+        self.toolhead_busy_label.hide()
+        c.addWidget(self.toolhead_busy_label)
         self.toolhead_hint = label('Manual movement unavailable', 'caption')
         c.addWidget(self.toolhead_hint)
         control_motor_button = button('Motors Off', partial(self.request_toolhead_action, 'M84', '', ''))
@@ -4265,7 +4338,7 @@ class Screen(QWidget):
                 warn(self, 'Home axes', 'Homing shortcut is available only when the printer is confirmed idle.')
                 return
             if QMessageBox.question(self, 'Home axes', 'Home all axes (G28)?', QMessageBox.Yes | QMessageBox.No, QMessageBox.No) == QMessageBox.Yes and self.live_print_state() is not None and host_shutdown_allowed(self._live_status):
-                self.network.script('G28')
+                self.request_toolhead_action('G28', already_confirmed=True)
         elif key == 'cooldown':
             if not host_shutdown_allowed(self._live_status) or self.live_print_state() is None:
                 warn(self, 'Cooldown', 'Cooldown is available only when the printer is confirmed idle.')
@@ -5104,6 +5177,11 @@ class Screen(QWidget):
         st = data['status']
         self._live_status = st
         self._live_status_at = time.monotonic()
+        # Never use a poll begun before command completion as the final homed state.
+        if self._toolhead_finished_at and not self._toolhead_uncertain and data.get('poll_started', 0) >= self._toolhead_finished_at:
+            self._toolhead_pending = ''
+            self._toolhead_finished_at = 0.0
+            self._homing_timer.stop()
         if self._z_save_locked and self._z_save_accepted and live_z_value(st) == 0 and st.get('configfile', {}).get('save_config_pending') is False:
             self._z_save_locked = False
         self._shutdown_idle = self._health_state == 'ready' and host_shutdown_allowed(st)
@@ -5640,8 +5718,50 @@ class Screen(QWidget):
             label_widget.setText('● Active' if active else '○ Inactive')
             label_widget.setStyleSheet('color: #59d9a1;' if active else 'color: #9eadc2;')
 
+    def select_jog_step(self, step):
+        if step not in self.jog_step_buttons:
+            return
+        self.jog_step = step
+        for value, b in self.jog_step_buttons.items():
+            b.setChecked(value == step)
+            b.setStyleSheet('QPushButton { background: #2866bd; color: white; border-color: #75c3ff; }' if value == step else '')
+
+    def set_home_color(self, button_widget, state):
+        if button_widget.property('homeColor') == state:
+            return
+        button_widget.setProperty('homeColor', state)
+        color, border = ('#2866bd', '#5596e8') if state == 'homed' else ('#424952', '#606a77')
+        button_widget.setStyleSheet(f'QPushButton {{ background: {color}; color: #ffffff; border: 1px solid {border}; }} '
+                                   f'QPushButton:disabled {{ background: {color}; color: #b0b8c3; }} '
+                                   'QPushButton:pressed { background: #365c87; }')
+
+    def animate_toolhead_busy(self):
+        glyph = ''
+        if self._toolhead_pending:
+            if self._toolhead_finished_at:
+                glyph = '…'
+                text = tr('Waiting for live axis status') if not self._toolhead_uncertain else tr('Check printer and restart VeloxScreen before further manual motion.')
+            else:
+                glyph = ('◐', '◓', '◑', '◒')[self._homing_frame % 4]
+                self._homing_frame += 1
+                text = glyph + ' ' + tr('Homing in progress' if homing_axes(self._toolhead_pending) else 'Motion request in progress') + ' · ' + self._toolhead_pending
+            if self._toolhead_feedback:
+                text += ' · ' + self._toolhead_feedback
+        else:
+            text = self._toolhead_feedback
+        for script, widget in list(self.dashboard_home_buttons.items()) + [(key, item[0]) for key, item in self.toolhead_action_buttons.items() if homing_axes(key)]:
+            base = widget.property('homeLabel')
+            if base:
+                text_on_button = glyph + ' ' + base if script == self._toolhead_pending and glyph else base
+                if widget.text() != text_on_button:
+                    widget.setText(text_on_button)
+        for widget in (self.toolhead_busy_label, self.dashboard_homing_status):
+            widget.setText(text)
+            widget.setVisible(bool(text))
+
     def update_toolhead_control(self, status):
         ready = self._health_state == 'ready' and self.live_print_state() is not None
+        busy = bool(self._toolhead_pending)
         visible_status = status if ready else {}
         coords = toolhead_coordinates(visible_status)
         for axis, (name, value, machine) in self.toolhead_position_labels.items():
@@ -5651,30 +5771,59 @@ class Screen(QWidget):
             value.setText(fmt(pos, digits) if pos is not None else '—')
             machine.setText(tr('Machine') + ' ' + fmt(physical, digits) if physical is not None else '—')
         for (axis, _), b in self.toolhead_jog_buttons.items():
-            b.setEnabled(ready and manual_motion_allowed(status, axis.lower()))
-        for b, axes, feature in self.toolhead_action_buttons.values():
+            b.setEnabled(ready and not busy and manual_motion_allowed(status, axis.lower()))
+        for script, (b, axes, feature) in self.toolhead_action_buttons.items():
             supported = not feature or feature in self.all_objects
             b.setVisible(supported)
-            b.setEnabled(ready and supported and manual_motion_allowed(status, axes))
-        self.toolhead_hint.setText(tr('Manual movement requires an idle printer. Home axes before jogging.' if ready and manual_motion_allowed(status) else 'Manual movement unavailable'))
+            b.setEnabled(ready and not busy and supported and manual_motion_allowed(status, axes))
+            if homing_axes(script):
+                self.set_home_color(b, homing_visual_state(script, status, ready, busy))
+        for script, b in self.dashboard_home_buttons.items():
+            b.setEnabled(ready and not busy and manual_motion_allowed(status))
+            self.set_home_color(b, homing_visual_state(script, status, ready, busy))
+        self.toolhead_hint.setText(tr('Manual movement requires an idle printer. Home axes before jogging.' if ready and not busy and manual_motion_allowed(status) else 'Manual movement unavailable'))
+        self.animate_toolhead_busy()
 
-    def request_toolhead_action(self, script, axes='', feature=''):
-        if self.live_print_state() is None or not manual_motion_allowed(self._live_status, axes):
+    def toolhead_motion_result(self, script, accepted, message, uncertain):
+        if script != self._toolhead_pending:
+            return
+        self._toolhead_finished_at = time.monotonic()
+        self._toolhead_uncertain = uncertain
+        if not accepted:
+            self._toolhead_feedback = tr('Motion not confirmed') + ': ' + message
+            self.log(self._toolhead_feedback)
+            self.record_event('Warning', 'Toolhead motion not confirmed', message, popup=True)
+        self._homing_timer.stop()
+        self.animate_toolhead_busy()
+        QTimer.singleShot(0, self.network.poll)
+
+    def request_toolhead_action(self, script, axes='', feature='', already_confirmed=False):
+        if self._toolhead_pending or self.live_print_state() is None or not manual_motion_allowed(self._live_status, axes):
             warn(self, 'Toolhead', 'Manual movement unavailable')
             return
         if feature and feature not in self.all_objects:
             return
-        if self.confirm_enabled:
+        if self.confirm_enabled and not already_confirmed:
             if QMessageBox.question(self, tr('Toolhead'), script + '?', QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
                 return
-        self.network.manual_motion(script, axes, feature)
+        # A modal confirmation can outlive the idle state.
+        if self._toolhead_pending or self.live_print_state() is None or not manual_motion_allowed(self._live_status, axes):
+            return
+        self._toolhead_pending = script
+        self._toolhead_uncertain = False
+        self._toolhead_finished_at = 0.0
+        self._toolhead_feedback = ''
+        self._homing_frame = 0
+        self.update_toolhead_control(self._live_status)
+        self._homing_timer.start()
+        self.network.manual_motion(script, axes, feature, tracked=True)
         self.log('>> ' + script)
 
     def jog(self, axis, direction):
-        if self.live_print_state() is None or not manual_motion_allowed(self._live_status, axis.lower()):
+        if self._toolhead_pending or self.live_print_state() is None or not manual_motion_allowed(self._live_status, axis.lower()):
             warn(self, 'Toolhead', 'Manual movement unavailable')
             return
-        dist = fval(self.jog_step.currentText()) * direction
+        dist = self.jog_step * direction
         if self.jog_invert.get(axis, False):
             dist = -dist
         # G-code F is mm/min; UI displays mm/s.

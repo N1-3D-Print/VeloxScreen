@@ -6,11 +6,11 @@
 Responsive layout for small Raspberry Pi touchscreens (experimental 320 × 240 to 1024 × 600). No browser required.
 
 > [!WARNING]
-> **Early Alpha (v0.4.4)** — bugs and incomplete features are expected. Test printer controls carefully. Found an issue? **Please open a GitHub Issue!** Feedback and suggestions are welcome.
+> **Early Alpha (v0.4.5)** — bugs and incomplete features are expected. Test printer controls carefully. Found an issue? **Please open a GitHub Issue!** Feedback and suggestions are welcome.
 
 ## Features
 
-- **Toolhead control:** Mainsail-inspired XYZ G-code and machine coordinate readouts, homed status per axis, XY directional pad, Z jog, step size, Home all/XY/X/Y/Z, and detected Z-Tilt/QGL in one responsive Control block. Manual movement requires a verified idle printer; jog requires the relevant homed axis. Existing per-axis jog settings and layout ordering are retained.
+- **Toolhead control:** Mainsail-inspired XYZ G-code and machine coordinate readouts, homed status per axis, XY directional pad, Z jog, step size, Home all/XY/X/Y/Z, and detected Z-Tilt/QGL in one responsive Control block. Manual movement requires a verified idle printer; jog requires the relevant homed axis. Existing per-axis jog settings and layout ordering are retained. Home buttons are grey until their axes are homed, then blue. A spinning indicator and temporary motion lock show a locally requested homing operation until Klipper responds and fresh status arrives. Visible step buttons default to 50 mm for XYZ; select a smaller increment near travel limits.
 
 - **Design cleanup:** consistent theme-derived number fields, transparent ordinary labels, unified cards, controls and progress bars. Default small-dot pointer; hidden or standard system cursor selectable in Display comfort.
 - **Emergency stop:** a compact red button fixed at the top right of both Dashboard and Print replaces the full-width Print stop bar. Both pages use the same dedicated Moonraker emergency endpoint with mandatory confirmation. Host shutdown remains in Settings.

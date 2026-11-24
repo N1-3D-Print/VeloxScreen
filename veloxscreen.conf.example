@@ -19,6 +19,7 @@ button_color = #26364e
 [extrusion]
 lengths = 1, 5, 10, 50, 100
 speeds = 2, 5, 10, 20, 50
+# Visible XYZ step buttons; 50 mm is always included and selected on startup.
 jog_steps = 1, 5, 15, 25, 50
 
 [jog]
