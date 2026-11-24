@@ -6,9 +6,13 @@
 Responsive layout for small Raspberry Pi touchscreens (experimental 320 × 240 to 1024 × 600). No browser required.
 
 > [!WARNING]
-> **Early Alpha (v0.4.9)** — bugs and incomplete features are expected. Test printer controls carefully. Found an issue? **Please open a GitHub Issue!** Feedback and suggestions are welcome.
+> **Early Alpha (v0.4.10)** — bugs and incomplete features are expected. Test printer controls carefully. Found an issue? **Please open a GitHub Issue!** Feedback and suggestions are welcome.
 
-## What's new in v0.4.9 Alpha
+## What's new in v0.4.10 Alpha
+
+**Per-tool filament presence:** the Tools page shows a green `Filament present` or red `No filament` status under each mapped extruder, separately from the blue active-tool tile. Disabled, unavailable and unassigned sensors are distinguished. Common per-tool sensor names are detected automatically; use `[filament_sensors]` for exact mappings. Motion-only sensors do not prove filament presence. No extra Moonraker polling or changes to filament macros. See [multi-tool setup](docs/MULTITOOL.md).
+
+### Previous update: v0.4.9
 
 Direct tool changes are enabled by default: tap T0/T1/Tn to request its configured macro. Under **Settings → Confirmation dialogs**, disable direct mode to restore the separate Activate button, and independently choose confirmations for tool changes, extrusion/retract and filament load/unload (including All). Existing G-code confirmation settings are inherited until individually customized. Motion/temperature interlocks and mandatory emergency/recovery confirmations remain in place. Fixed a duplicated `bash` in the kiosk installer.
 

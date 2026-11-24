@@ -1,4 +1,4 @@
-# Multi-tool & filament management (v0.4.9 alpha)
+# Multi-tool & filament management (v0.4.10 alpha)
 
 ## Tools page
 
@@ -58,3 +58,19 @@ No Snapmaker-specific motion is hard-coded. A four-extruder U1 can use the same 
 ## Validation
 
 The release has dependency-free logic tests (including sparse tool IDs, macro overrides and fresh dispatch guards). Native Qt rendering, touchscreen interaction, actual tool changes and filament operations require hardware testing. The new image is a reconstructed UI preview, not a connected-printer capture.
+
+## Per-tool filament presence
+
+Switch sensors report filament at their physical location. Green means present, red means absent; amber means disabled. Grey means no assignment, unavailable status or motion-only sensor. The active tool stays blue independently of filament state. Disabled sensors and disconnected/stale printer status never display a positive presence indication. No motion, sensor enable/disable, or runout behavior is changed by this feature.
+
+Conventional names such as `e0_filament`, `t0_filament`, `extruder0_filament` (and reversed forms such as `filament_t0`) are matched using the actual extruder index. A single switch can be assigned automatically on a single-extruder printer; multiple ambiguous candidates remain unassigned. The optional mapping uses full Klipper object names (check your actual configuration):
+
+```ini
+[filament_sensors]
+T0 = filament_switch_sensor e0_filament
+T1 = filament_switch_sensor e1_filament
+T2 = filament_switch_sensor e2_filament
+T3 = filament_switch_sensor e3_filament
+```
+
+An empty mapping disables auto-assignment for that tool. Do not assign a shared sensor to multiple tools. Motion sensors cannot prove static filament presence. If you use one, the UI identifies it as motion-only rather than showing loaded/empty. The indication is not an interlock; always verify actual filament path and loading behavior.

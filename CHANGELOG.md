@@ -1,3 +1,10 @@
+## v0.4.10-alpha — Per-tool filament sensors
+
+- Read existing Moonraker switch-sensor status and display per-tool presence independently of tool activation and heater state.
+- Match unambiguous conventional per-extruder sensor names; support exact `[filament_sensors]` overrides and a single-extruder/single-switch fallback. Do not assign shared or ambiguous sensors by order.
+- Distinguish disabled, unavailable, unassigned and motion-only sensors; never infer nozzle loading from motion or a successful macro. Presence means filament at the sensor, not at the nozzle.
+- Read-only UI; no macro or runout behavior changes, no extra polling.
+
 ## v0.4.9-alpha — Direct tool controls
 
 - Direct tool changes on tile tap (default); optional separate Activate button.

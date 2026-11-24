@@ -43,6 +43,15 @@ speed_z = 10
 # T0 = PICK_TOOL TOOL=0
 # T1 = PICK_TOOL TOOL=1
 
+[filament_sensors]
+# Optional exact Klipper object names. Conventional per-tool names are auto-detected.
+# Switch sensors show presence; motion sensors alone cannot prove filament is loaded.
+# Empty values disable automatic assignment for that tool.
+# T0 = filament_switch_sensor e0_filament
+# T1 = filament_switch_sensor e1_filament
+# T2 = filament_switch_sensor e2_filament
+# T3 = filament_switch_sensor e3_filament
+
 [filament_macros]
 # Optional exact commands for existing Klipper macros; omit keys for auto-detection.
 # Use {tool} for the selected T label and {extruder} for the Klipper object.

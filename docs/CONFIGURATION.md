@@ -150,3 +150,7 @@ No change required for supported standard probes or mechanical endstops. For a s
 Dashboard and Print share a compact emergency stop fixed at the top right. Host shutdown moved to Settings → Service Control and retains its separate confirmation and idle checks.
 
 See [Multi-tool & filament management](MULTITOOL.md) for tool mapping, macro overrides and limitations.
+
+## Per-tool filament sensors
+
+Optional `[filament_sensors]` maps T labels to exact Klipper sensor object names, e.g. `T0 = filament_switch_sensor e0_filament`. Unspecified tools use unambiguous name detection. Empty values opt out. See [multi-tool setup](MULTITOOL.md).

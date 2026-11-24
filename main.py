@@ -219,6 +219,64 @@ def discovered_tool_mapping(objects, mapping):
     return result
 
 
+def tool_filament_sensors(objects, tools, overrides):
+    """Resolve unique sensor-to-tool assignments; never guess from object order.
+
+    Explicit full object names win. Automatic matching only accepts conventional
+    exact names, with a single-switch fallback on a single-extruder printer.
+    """
+    sensors = {n for n in objects if n.startswith(('filament_switch_sensor ', 'filament_motion_sensor '))}
+    explicit = {str(k).strip().upper(): str(v).strip() for k, v in overrides.items()}
+    reserved = {explicit[t.upper()] for t in tools if t.upper() in explicit}
+    result = {}
+    for tool, extruder in tools.items():
+        if tool.upper() in explicit:
+            sensor = explicit[tool.upper()]
+            # Duplicate assignments and empty overrides deliberately do not fall back.
+            result[tool] = sensor if sensor and sum(explicit.get(t.upper()) == sensor for t in tools) == 1 else None
+            continue
+        # Use the actual extruder number rather than the potentially remapped tool ID.
+        match = re.fullmatch(r'extruder(\d*)', extruder)
+        if not match:
+            continue
+        number = match.group(1) or '0'
+        identifiers = {extruder.lower(), 'extruder' + number, 'e' + number, 't' + number, 'tool' + number}
+        names = set(identifiers)
+        for ident in identifiers:
+            for suffix in ('filament', 'filament_sensor', 'runout', 'runout_sensor'):
+                for sep in ('_', '-', ' '):
+                    names.update((ident + sep + suffix, suffix + sep + ident))
+        matches = [n for n in sensors - reserved if n.split(' ', 1)[1].lower() in names]
+        switches = [n for n in matches if n.startswith('filament_switch_sensor ')]
+        candidates = switches or matches
+        if not candidates and len(tools) == 1:
+            candidates = [n for n in sensors - reserved if n.startswith('filament_switch_sensor ')]
+        if len(candidates) == 1:
+            result[tool] = candidates[0]
+    # An automatic name must not end up assigned to two tools either.
+    for tool, sensor in list(result.items()):
+        if sensor and list(result.values()).count(sensor) > 1:
+            for other in [t for t, value in result.items() if value == sensor]:
+                result[other] = None
+    return result
+
+
+def tool_filament_state(sensor, objects, status, ready):
+    """A switch reports presence at its location, not nozzle loading depth."""
+    if not sensor:
+        return 'unassigned'
+    if not ready or sensor not in objects:
+        return 'unknown'
+    data = status.get(sensor, {})
+    if data.get('enabled') is False:
+        return 'disabled'
+    if data.get('enabled') is not True or not isinstance(data.get('filament_detected'), bool):
+        return 'unknown'
+    if sensor.startswith('filament_motion_sensor '):
+        return 'motion'
+    return 'present' if data['filament_detected'] else 'empty'
+
+
 def filament_macro_commands(objects, overrides, tool, extruder):
     """Resolve existing macros only; never synthesize filament movement."""
     macros = {n.split(' ', 1)[1].upper(): n for n in objects if n.lower().startswith('gcode_macro ')}
@@ -1305,6 +1363,12 @@ _ADDED_EN_DE = {
     ('Waiting for heater data...', 'Warte auf Heizungsdaten ...'),
     ('No heaters or chamber sensors found.', 'Keine Heizungen oder Kammersensoren gefunden.'),
     ('Heater temperature limit is unavailable.', 'Temperaturgrenze der Heizung nicht verfügbar.'),
+    ('Filament present', 'Filament erkannt'),
+    ('No filament', 'Kein Filament'),
+    ('Sensor disabled', 'Sensor deaktiviert'),
+    ('Motion sensor only', 'Nur Bewegungssensor'),
+    ('Sensor unavailable', 'Sensor nicht verfügbar'),
+    ('No sensor assigned', 'Kein Sensor zugeordnet'),
     ('Sensor only', 'Nur Sensor'),
     ('Target', 'Soll'),
     ('Waiting for Klipper values', 'Warte auf Klipper-Werte'),
@@ -3063,7 +3127,7 @@ class Screen(QWidget):
             self.pages[name] = self._page(name, builder)
             self.stack.addWidget(self.pages[name])
         nav_layout.addStretch()
-        sl.addWidget(label('v0.4.9 alpha', 'caption'))
+        sl.addWidget(label('v0.4.10 alpha', 'caption'))
         # IMPORTANT: Qt otherwise deletes self.connection and all nav buttons.
         outer.addWidget(sidebar)
         sidebar.setVisible(not self.compact)
@@ -3969,6 +4033,7 @@ class Screen(QWidget):
         self.tool_button_grid.setSpacing(5)
         c.addLayout(self.tool_button_grid)
         self.tool_buttons = {}
+        self.tool_filament_labels = {}
         self._tool_mapping = {}
         self.activate_tool_button = button('Activate selected tool', self.activate_selected_tool)
         self.tool_temperature_button = button('Set tool temperature', self.set_selected_tool_temperature)
@@ -6068,12 +6133,23 @@ class Screen(QWidget):
             self.tool_selector.clear()
             self._clear_layout(self.tool_button_grid)
             self.tool_buttons = {}
+            self.tool_filament_labels = {}
             for i, (name, obj) in enumerate(discovered.items()):
                 self.tool_selector.addItem(name + ' · ' + obj, obj)
                 widget = button(name, lambda checked=False, target=obj: self.select_tool(target))
                 self.tool_buttons[obj] = widget
                 columns = 2 if self.tiny else 4
-                self.tool_button_grid.addWidget(widget, i // columns, i % columns)
+                tile = QWidget()
+                tile_layout = QVBoxLayout(tile)
+                tile_layout.setContentsMargins(0, 0, 0, 0)
+                tile_layout.setSpacing(2)
+                tile_layout.addWidget(widget)
+                sensor_label = label('', 'caption')
+                sensor_label.setAlignment(Qt.AlignCenter)
+                sensor_label.hide()
+                tile_layout.addWidget(sensor_label)
+                self.tool_filament_labels[obj] = sensor_label
+                self.tool_button_grid.addWidget(tile, i // columns, i % columns)
                 widget.setVisible(len(discovered) > 1)
                 if obj == selected:
                     self.tool_selector.setCurrentIndex(i)
@@ -6143,6 +6219,9 @@ class Screen(QWidget):
         idle = ready and self.filament_idle()
         selected = self.tool_selector.currentData()
         active = status.get('toolhead', {}).get('extruder') if ready else None
+        sensor_overrides = dict(config.items('filament_sensors')) if config.has_section('filament_sensors') else {}
+        sensors = tool_filament_sensors(self.all_objects, self._tool_mapping, sensor_overrides)
+        sensor_available = bool(sensor_overrides or any(n.startswith(('filament_switch_sensor ', 'filament_motion_sensor ')) for n in self.all_objects))
         for name, obj in self._tool_mapping.items():
             widget = self.tool_buttons[obj]
             data = status.get(obj, {}) if ready else {}
@@ -6151,6 +6230,23 @@ class Screen(QWidget):
             widget.setText(f"{name}{' · Active' if obj == active else ''}{' •' if obj == selected else ''}\n{fmt(data.get('temperature'), 0)} / {fmt(data.get('target'), 0)} °C{suffix}")
             self.set_home_color(widget, 'homed' if obj == active else 'neutral')
             widget.setEnabled(idle)
+            sensor = sensors.get(name)
+            sensor_label = self.tool_filament_labels[obj]
+            filament_state = tool_filament_state(sensor, self.all_objects, status, ready)
+            sensor_text, background = {
+                'present': ('Filament present', '#205d42'),
+                'empty': ('No filament', '#862b35'),
+                'disabled': ('Sensor disabled', '#77551d'),
+                'motion': ('Motion sensor only', '#424952'),
+                'unknown': ('Sensor unavailable', '#424952'),
+                'unassigned': ('No sensor assigned', '#424952'),
+            }[filament_state]
+            sensor_label.setText(tr(sensor_text))
+            if sensor_label.property('filamentState') != filament_state:
+                sensor_label.setProperty('filamentState', filament_state)
+                sensor_label.setStyleSheet('QLabel { background: ' + background + '; color: white; border-radius: 4px; padding: 3px; }')
+            sensor_label.setToolTip(sensor or tr('No sensor assigned'))
+            sensor_label.setVisible(sensor_available)
         self.tool_selector.setEnabled(idle)
         self.show_heater_target(self.selected_heating_status, status.get(selected, {}) if ready else {})
         self.pa_spin.setEnabled(ready and not self._toolhead_pending and bool(selected))
