@@ -6,9 +6,13 @@
 Responsive layout for small Raspberry Pi touchscreens (experimental 320 × 240 to 1024 × 600). No browser required.
 
 > [!WARNING]
-> **Early Alpha (v0.4.10)** — bugs and incomplete features are expected. Test printer controls carefully. Found an issue? **Please open a GitHub Issue!** Feedback and suggestions are welcome.
+> **Early Alpha (v0.4.11)** — bugs and incomplete features are expected. Test printer controls carefully. Found an issue? **Please open a GitHub Issue!** Feedback and suggestions are welcome.
 
-## What's new in v0.4.10 Alpha
+## What's new in v0.4.11 Alpha
+
+**Dashboard multi-tool temperatures:** all discovered hotends and the bed are shown, plus a prioritized chamber reading when available. The grid grows vertically and retains saved temperature ordering; no configuration changes required. Other generic heaters fill spare slots, and the full Temperatures page remains available.
+
+### Previous update: v0.4.10
 
 **Per-tool filament presence:** the Tools page shows a green `Filament present` or red `No filament` status under each mapped extruder, separately from the blue active-tool tile. Disabled, unavailable and unassigned sensors are distinguished. Common per-tool sensor names are detected automatically; use `[filament_sensors]` for exact mappings. Motion-only sensors do not prove filament presence. No extra Moonraker polling or changes to filament macros. See [multi-tool setup](docs/MULTITOOL.md).
 

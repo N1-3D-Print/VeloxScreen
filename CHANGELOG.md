@@ -1,3 +1,8 @@
+## v0.4.11-alpha — Dashboard multi-tool temperatures
+
+- Remove the two-hotend and four-tile limits for all detected hotends, bed and prioritized chamber. Keep the compact generic-heater fallback, responsive grid and saved tile order.
+- No configuration migration, API or printer-control changes.
+
 ## v0.4.10-alpha — Per-tool filament sensors
 
 - Read existing Moonraker switch-sensor status and display per-tool presence independently of tool activation and heater state.

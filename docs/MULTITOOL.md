@@ -1,4 +1,4 @@
-# Multi-tool & filament management (v0.4.10 alpha)
+# Multi-tool & filament management (v0.4.11 alpha)
 
 ## Tools page
 
@@ -74,3 +74,7 @@ T3 = filament_switch_sensor e3_filament
 ```
 
 An empty mapping disables auto-assignment for that tool. Do not assign a shared sensor to multiple tools. Motion sensors cannot prove static filament presence. If you use one, the UI identifies it as motion-only rather than showing loaded/empty. The indication is not an interlock; always verify actual filament path and loading behavior.
+
+## Dashboard temperatures
+
+All discovered hotends are displayed on Dashboard, along with the bed and a prioritized chamber reading when available. The grid grows vertically without a tool-count limit. Existing `temperature_order` settings are honored; new hotends are appended if absent from the saved order. No configuration changes needed.

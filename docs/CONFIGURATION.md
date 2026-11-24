@@ -129,7 +129,7 @@ print_order = ["temperatures", "fans", "motion", "overrides"]
 temperature_order = ["heater_bed", "extruder", "extruder1"]
 ```
 
-Additional keys: `nav_order`, `dashboard_order`, `control_order`, `tools_order`, `temperatures_order`, `macros_order`, `settings_order`, `macro_order`, `preset_order`. The editor writes JSON arrays except `fan_order`, which remains comma-separated for compatibility. Empty values use default order. Unknown IDs are ignored for display; new objects are appended. Fan and temperature order is shared by the relevant pages; the Dashboard still shows its selected subset of temperature tiles, and Print excludes automatic fans. Safety and fault controls cannot be moved. No Klipper configuration or hardware settings are changed.
+Additional keys: `nav_order`, `dashboard_order`, `control_order`, `tools_order`, `temperatures_order`, `macros_order`, `settings_order`, `macro_order`, `preset_order`. The editor writes JSON arrays except `fan_order`, which remains comma-separated for compatibility. Empty values use default order. Unknown IDs are ignored for display; new objects are appended. Fan and temperature order is shared by the relevant pages; the Dashboard includes every detected hotend, the bed and a prioritized chamber reading, with other generic heaters filling spare slots, and Print excludes automatic fans. Safety and fault controls cannot be moved. No Klipper configuration or hardware settings are changed.
 
 ## Live heating indicators
 

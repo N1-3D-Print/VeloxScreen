@@ -88,6 +88,27 @@ def ordered_items(defaults, preferred):
     return list(dict.fromkeys([v for v in preferred if v in allowed] + defaults))
 
 
+def dashboard_temperature_names(objects, preferred=()):
+    """Keep every hotend and the bed, plus a prioritized chamber tile.
+
+    Other generic heaters fill spare slots in the compact four-tile overview;
+    all remaining sensors and heaters are available on the Temperatures page.
+    """
+    names = list(dict.fromkeys(objects))
+    chosen = sorted((n for n in names if n == 'extruder' or re.fullmatch(r'extruder\d+', n)),
+                    key=lambda n: (n != 'extruder', int(n[8:]) if n != 'extruder' else 0))
+    if 'heater_bed' in names:
+        chosen.append('heater_bed')
+    chambers = [n for n in names if n.startswith(('heater_generic ', 'temperature_sensor ', 'temperature_fan '))
+                and any(x in n.lower() for x in ('chamber', 'kammer'))]
+    chambers.sort(key=lambda n: (0 if n.startswith('heater_generic ') else 1, n.lower()))
+    if chambers:
+        chosen.append(chambers[0])
+    spare = max(0, 4 - len(chosen))
+    chosen.extend([n for n in names if n.startswith('heater_generic ') and n not in chosen][:spare])
+    return ordered_items(chosen, preferred)
+
+
 def options(section, key, fallback):
     values = conf(section, key, fallback)
     out = []
@@ -3127,7 +3148,7 @@ class Screen(QWidget):
             self.pages[name] = self._page(name, builder)
             self.stack.addWidget(self.pages[name])
         nav_layout.addStretch()
-        sl.addWidget(label('v0.4.10 alpha', 'caption'))
+        sl.addWidget(label('v0.4.11 alpha', 'caption'))
         # IMPORTANT: Qt otherwise deletes self.connection and all nav buttons.
         outer.addWidget(sidebar)
         sidebar.setVisible(not self.compact)
@@ -6061,25 +6082,11 @@ class Screen(QWidget):
             obj.setText(tr(text))
 
     def update_dashboard_temperatures(self, st):
-        """Prioritize meaningful heaters/chamber sensors in fixed 2-column tiles.
+        """Show all hotends, bed and prioritized chamber in responsive tiles.
 
         Sensor-only items have no target; additional sensors live in Temperaturen.
         """
-        all_names = self.all_objects
-        extruders = sorted((n for n in all_names if n == 'extruder' or re.fullmatch(r'extruder\d+', n)),
-                           key=lambda n: (n != 'extruder', int(n[8:]) if n != 'extruder' else 0))
-        chosen = extruders[:2]
-        if 'heater_bed' in all_names:
-            chosen.append('heater_bed')
-        chambers = [n for n in all_names if n.startswith(('heater_generic ', 'temperature_sensor ', 'temperature_fan '))
-                    and any(x in n.lower() for x in ('chamber', 'kammer'))]
-        # Heaters first, then sensor-only readings; avoid random hardware sensor names.
-        chambers.sort(key=lambda n: (0 if n.startswith('heater_generic ') else 1, n.lower()))
-        if chambers:
-            chosen.append(chambers[0])
-        if len(chosen) < 4:
-            chosen.extend(n for n in all_names if n.startswith('heater_generic ') and n not in chosen)
-        chosen = ordered_items(chosen[:4], read_layout_order('temperature_order'))
+        chosen = dashboard_temperature_names(self.all_objects, read_layout_order('temperature_order'))
         signature = tuple(chosen)
         if signature != self._dash_temp_signature:
             self._dash_temp_signature = signature
