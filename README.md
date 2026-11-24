@@ -6,10 +6,11 @@
 Responsive layout for small Raspberry Pi touchscreens (experimental 320 × 240 to 1024 × 600). No browser required.
 
 > [!WARNING]
-> **Early Alpha (v0.3.14)** — bugs and incomplete features are expected. Test printer controls carefully. Found an issue? **Please open a GitHub Issue!** Feedback and suggestions are welcome.
+> **Early Alpha (v0.3.15)** — bugs and incomplete features are expected. Test printer controls carefully. Found an issue? **Please open a GitHub Issue!** Feedback and suggestions are welcome.
 
 ## Features
 
+- **Host shutdown:** compact Dashboard button with independent optional confirmation (enabled by default). Blocked during active/paused prints or unverified status; let hotends cool first. Shuts down the OS via Moonraker, not the printer power supply.
 - **Recovery:** Automatically opens on Klipper error, shutdown or disconnection, including faults triggered externally. Shows the original Klipper state message, a persistent status banner and confirmed Firmware Restart, Restart Klipper and Host Reboot actions. Correct the underlying fault first. A stopped print cannot be resumed.
 
 

@@ -96,6 +96,13 @@ def fval(v, fallback=0.0):
         return fallback
 
 
+def host_shutdown_allowed(status):
+    """Only permit an explicitly known idle/non-printing virtual SD state."""
+    state = status.get('print_stats', {}).get('state')
+    active = status.get('virtual_sdcard', {}).get('is_active')
+    return state in ('standby', 'complete', 'cancelled', 'error') and active is False
+
+
 class Network(QObject):
     data = pyqtSignal(object)
     err = pyqtSignal(str)
@@ -104,6 +111,7 @@ class Network(QObject):
     emergency_triggered = pyqtSignal()
     printer_health = pyqtSignal(object)
     recovery_result = pyqtSignal(str)
+    shutdown_result = pyqtSignal(bool, str)
 
     def __init__(self, url):
         super().__init__()
@@ -249,6 +257,27 @@ class Network(QObject):
                 # A failed request is not automatically proof of a successful restart.
                 self.recovery_result.emit('Recovery request status unknown: ' + str(exc))
                 self.err.emit('Recovery request status unknown: ' + str(exc))
+        threading.Thread(target=work, daemon=True).start()
+
+    def shutdown_host(self):
+        """Request a graceful OS shutdown, after a fresh printer-state check."""
+        def work():
+            try:
+                status = self.call('/printer/objects/query?print_stats&virtual_sdcard').get('result', {}).get('status', {})
+                if not host_shutdown_allowed(status):
+                    self.shutdown_result.emit(False, 'Shutdown blocked: printer is not confirmed idle.')
+                    return
+            except Exception as exc:
+                self.shutdown_result.emit(False, 'Cannot verify printer status: ' + str(exc))
+                return
+            try:
+                self.call('/machine/shutdown', method='POST')
+                self.shutdown_result.emit(True, 'Host shutdown requested.')
+            except urllib.error.HTTPError as exc:
+                self.shutdown_result.emit(False, 'Shutdown rejected by Moonraker: HTTP ' + str(exc.code))
+            except Exception as exc:
+                # The server may disappear before sending its response. Do not retry automatically.
+                self.shutdown_result.emit(False, 'Shutdown request status unknown: ' + str(exc))
         threading.Thread(target=work, daemon=True).start()
 
     def script(self, script):
@@ -533,6 +562,20 @@ _ADDED_EN_DE = {
     ('Tap percentage to enter exact value', 'Prozentwert antippen für genaue Eingabe'),
     ('Flow override is global for the G-Code stream, including tool changes.',
      'Flussfaktor gilt global für den G-Code, auch bei Toolwechseln.'),
+    ('Confirm host shutdown', 'Herunterfahren bestätigen'),
+    ('Shutdown Host', 'Host herunterfahren'),
+    ('Shutdown blocked: printer is not confirmed idle.', 'Herunterfahren gesperrt: Drucker nicht nachweislich im Leerlauf.'),
+    ('The host will shut down. Let the hotends cool first. Mainsail and SSH will disconnect. Continue?',
+     'Der Host wird heruntergefahren. Hotends vorher abkühlen lassen. Mainsail und SSH werden getrennt. Fortfahren?'),
+    ('Shutdown is allowed only when the printer is confirmed idle. Let the hotends cool first.',
+     'Herunterfahren nur bei bestätigtem Leerlauf. Hotends vorher abkühlen lassen.'),
+    ('If disabled, the dashboard shutdown button sends the request without asking. Active and paused prints remain protected.',
+     'Wenn deaktiviert, fährt der Dashboard-Button ohne Rückfrage herunter. Aktive und pausierte Drucke bleiben geschützt.'),
+    ('Host shutdown requested.', 'Herunterfahren des Hosts angefordert.'),
+    ('Requesting host shutdown...', 'Herunterfahren wird angefordert ...'),
+    ('Cannot verify printer status:', 'Druckerstatus kann nicht geprüft werden:'),
+    ('Shutdown rejected by Moonraker:', 'Herunterfahren von Moonraker abgelehnt:'),
+    ('Shutdown request status unknown:', 'Status der Shutdown-Anforderung unbekannt:'),
     ('Print temperatures', 'Drucktemperaturen'),
     ('Waiting for heater data...', 'Warte auf Heizungsdaten ...'),
     ('No heaters or chamber sensors found.', 'Keine Heizungen oder Kammersensoren gefunden.'),
@@ -1657,6 +1700,11 @@ class Screen(QWidget):
         self.network.emergency_triggered.connect(self.emergency_confirmed)
         self.network.printer_health.connect(self.update_printer_health)
         self.network.recovery_result.connect(self.show_recovery_result)
+        self.network.shutdown_result.connect(self.show_shutdown_result)
+        # Default to confirmation even for old configs with confirm_commands=false.
+        self.confirm_shutdown = conf('behavior', 'confirm_shutdown', 'true').strip().lower() not in ('false', 'no', '0', 'off')
+        self._shutdown_pending = False
+        self._shutdown_idle = False
         self._health_state = 'unknown'
         self._health_message = ''
         self._local_estop = False
@@ -1778,7 +1826,7 @@ class Screen(QWidget):
             self.pages[name] = self._page(name, builder)
             self.stack.addWidget(self.pages[name])
         nav_layout.addStretch()
-        sl.addWidget(label('v0.3.14 alpha', 'caption'))
+        sl.addWidget(label('v0.3.15 alpha', 'caption'))
         # IMPORTANT: Qt otherwise deletes self.connection and all nav buttons.
         outer.addWidget(sidebar)
         sidebar.setVisible(not self.compact)
@@ -2141,6 +2189,9 @@ class Screen(QWidget):
         previous = self._health_state
         self._health_state = state
         self._health_message = message
+        if state != 'ready':
+            self._shutdown_idle = False
+            self.update_shutdown_button()
         if state == 'ready':
             self._local_estop = False
             self.health_title.setText('READY')
@@ -2274,6 +2325,20 @@ class Screen(QWidget):
         self.network.script(command)
 
     def make_dashboard(self, l):
+        # Compact power action, separate from emergency stop and motor controls.
+        power_row = QHBoxLayout()
+        power_row.addStretch()
+        self.shutdown_button = button('Shutdown Host', self.request_host_shutdown)
+        self.shutdown_button.setMinimumHeight(32 if self.tiny else 38)
+        self.shutdown_button.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
+        self.shutdown_button.setToolTip(tr('Shutdown is allowed only when the printer is confirmed idle. Let the hotends cool first.'))
+        self.shutdown_button.setEnabled(False)
+        power_row.addWidget(self.shutdown_button)
+        l.addLayout(power_row)
+        self.shutdown_status = label('', 'caption')
+        self.shutdown_status.setTextFormat(Qt.PlainText)
+        self.shutdown_status.hide()
+        l.addWidget(self.shutdown_status)
         grid = QGridLayout()
         for i, (title, unit, key) in enumerate([
             ('GESCHWINDIGKEIT', 'mm/s', 'speed'),
@@ -2840,6 +2905,12 @@ class Screen(QWidget):
         self.confirm_checkbox.toggled.connect(self.change_confirmation)
         c.addWidget(self.confirm_checkbox)
         c.addWidget(label('Aus = Befehle werden beim Tippen direkt gesendet. Ein = Nachfrage vor jedem Befehl. Einstellung bleibt gespeichert.', 'caption'))
+        self.confirm_shutdown_checkbox = TouchCheckBox(tr('Confirm host shutdown'))
+        self.confirm_shutdown_checkbox.setMinimumHeight(40)
+        self.confirm_shutdown_checkbox.setChecked(self.confirm_shutdown)
+        self.confirm_shutdown_checkbox.toggled.connect(self.change_shutdown_confirmation)
+        c.addWidget(self.confirm_shutdown_checkbox)
+        c.addWidget(label('If disabled, the dashboard shutdown button sends the request without asking. Active and paused prints remain protected.', 'caption'))
         l.addWidget(f)
         f, c = card(tr('G-Code notifications'))
         self.notifications_checkbox = TouchCheckBox(tr('Show RESPOND / macro messages'))
@@ -2892,6 +2963,53 @@ class Screen(QWidget):
         self.jog_invert = {axis: inverted for axis, (inverted, _) in values.items()}
         self.jog_speed = {axis: speed for axis, (_, speed) in values.items()}
         self.jog_settings_status.setText('Jog settings saved. Applies immediately.')
+
+    def change_shutdown_confirmation(self, checked):
+        previous = self.confirm_shutdown
+        try:
+            set_config('behavior', 'confirm_shutdown', 'true' if checked else 'false')
+        except OSError as exc:
+            # Restore the in-memory config too, so a later unrelated save cannot persist a failed edit.
+            config.set('behavior', 'confirm_shutdown', 'true' if previous else 'false')
+            self.confirm_shutdown_checkbox.blockSignals(True)
+            self.confirm_shutdown_checkbox.setChecked(previous)
+            self.confirm_shutdown_checkbox.blockSignals(False)
+            warn(self, 'Confirm host shutdown', str(exc))
+            return
+        self.confirm_shutdown = bool(checked)
+
+    def update_shutdown_button(self):
+        self.shutdown_button.setEnabled(self._shutdown_idle and not self._shutdown_pending)
+
+    def request_host_shutdown(self):
+        if self._shutdown_pending:
+            return
+        if not self._shutdown_idle:
+            warn(self, 'Shutdown Host', 'Shutdown blocked: printer is not confirmed idle.')
+            return
+        if self.confirm_shutdown:
+            if QMessageBox.question(self, tr('Shutdown Host'),
+                                    tr('The host will shut down. Let the hotends cool first. Mainsail and SSH will disconnect. Continue?'),
+                                    QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
+                return
+        # Status can change while the modal confirmation is open. The worker also checks fresh data.
+        if not self._shutdown_idle or self._shutdown_pending:
+            return
+        self._shutdown_pending = True
+        self.update_shutdown_button()
+        self.shutdown_status.setText(tr('Requesting host shutdown...'))
+        self.shutdown_status.show()
+        self.network.shutdown_host()
+
+    def show_shutdown_result(self, accepted, message):
+        self.shutdown_status.setText(tr(message))
+        self.shutdown_status.show()
+        self.log(message)
+        if not accepted:
+            self._shutdown_pending = False
+            self.update_shutdown_button()
+            warn(self, 'Shutdown Host', message)
+        # On acceptance, leave disabled; the host should now be shutting down.
 
     def change_confirmation(self, checked):
         previous = self.confirm_enabled
@@ -3047,6 +3165,8 @@ class Screen(QWidget):
 
     def error(self, msg):
         self.connection.setText(tr('● Verbindung gestört'))
+        self._shutdown_idle = False
+        self.update_shutdown_button()
         self._print_temp_live = False
         for reading, target in self.print_temp_widgets.values():
             reading.setText('-- °C')
@@ -3084,6 +3204,8 @@ class Screen(QWidget):
         self.refresh_macros(data['status'])
         self.s = {**self.s, **data['status']}
         st = data['status']
+        self._shutdown_idle = self._health_state == 'ready' and host_shutdown_allowed(st)
+        self.update_shutdown_button()
         motion = st.get('motion_report', {})
         toolhead = st.get('toolhead', {})
         extruder_speed = fval(motion.get('live_extruder_velocity'))

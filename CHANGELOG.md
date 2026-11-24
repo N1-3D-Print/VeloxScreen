@@ -1,3 +1,11 @@
+## v0.3.15-alpha — Dashboard host shutdown
+
+- Compact Shutdown Host button at the top of Dashboard, using Moonraker `POST /machine/shutdown`.
+- Independent, persistent confirmation setting (`[behavior] confirm_shutdown = true` by default), applied immediately.
+- Disable shutdown during printing, paused prints or unknown/unavailable print status; verify idle state again before sending the request.
+- Show request feedback; do not retry automatically if Moonraker disconnects. Emergency stop and recovery confirmations are unchanged.
+- Shut down only after cooling the hotends. Native touchscreen and real host shutdown testing pending.
+
 ## v0.3.14-alpha — Printer fault and shutdown recovery
 
 - Poll Moonraker server and printer status independently of object queries, including during Klipper shutdown.

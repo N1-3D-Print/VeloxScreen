@@ -67,9 +67,12 @@ This only controls the VeloxScreen UI. No Klipper macro is deleted or disabled.
 ```ini
 [behavior]
 confirm_commands = true
+confirm_shutdown = true
 ```
 
-Set this to `false` to remove the extra prompt. **This does not bypass Klipper safety checks.**
+Set `confirm_commands` to `false` to remove the normal G-Code prompt. **This does not bypass Klipper safety checks.**
+
+`confirm_shutdown` independently controls the Dashboard **Shutdown Host** confirmation (default: `true`), also accessible under Settings → Confirmation dialogs. The button only becomes available when a live idle state is confirmed; the state is checked again immediately before the request. Active/paused prints and unknown state remain blocked even with confirmation disabled. Let the hotends cool before shutting down. Moonraker must have permission to shut down its host OS. This does not switch off a separate printer power supply or change M112/recovery confirmations.
 
 ## Speed and flow overrides
 
