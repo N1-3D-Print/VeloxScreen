@@ -6,12 +6,12 @@
 Responsive layout for small Raspberry Pi touchscreens (experimental 320 × 240 to 1024 × 600). No browser required.
 
 > [!WARNING]
-> **Early Alpha (v0.3.9)** — bugs and incomplete features are expected. Test printer controls carefully. Found an issue? **Please open a GitHub Issue!** Feedback and suggestions are welcome.
+> **Early Alpha (v0.3.10)** — bugs and incomplete features are expected. Test printer controls carefully. Found an issue? **Please open a GitHub Issue!** Feedback and suggestions are welcome.
 
 ## Features
 
 - **Print view:** opens automatically when printing starts (optional), with live print progress, actual speed, extrusion flow and acceleration limit, M220/M221 override buttons and fan sliders. An always-confirmed emergency stop uses Moonraker's dedicated emergency endpoint.
-- **Navigation:** larger, vertically scrollable sidebar on 800 × 480 and larger displays; compact dropdown navigation on small screens.
+- **Navigation:** larger, one-finger scrollable sidebar on 800 × 480 and larger displays; compact dropdown navigation on small screens.
 
 - **Network:** Wi-Fi scan, signal, IP address and connection via NetworkManager (experimental, permission-dependent).
 

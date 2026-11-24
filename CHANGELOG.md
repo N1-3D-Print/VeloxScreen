@@ -1,3 +1,10 @@
+## v0.3.10-alpha — One-finger sidebar navigation
+
+- Use the same kinetic `FingerScrollArea` for sidebar navigation and the main content.
+- Sidebar swipe now supports single-finger scrolling on touchscreens that emulate mouse drag events.
+- Keep large navigation buttons, compact dropdown navigation and all print controls unchanged.
+- Requires on-device touchscreen verification.
+
 ## v0.3.9-alpha — Print view and larger navigation
 
 - Auto-open print view on transition into `printing`, with optional `[print_view] auto_open = true`.

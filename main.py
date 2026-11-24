@@ -1677,10 +1677,10 @@ class Screen(QWidget):
         self.connection = label('● Verbinde ...', 'caption')
         sl.addWidget(self.connection)
         sl.addSpacing(4)
-        # The sidebar is scrollable: bigger navigation remains readable at 800x480.
-        nav_scroll = QScrollArea()
-        nav_scroll.setWidgetResizable(True)
-        nav_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        # Match the main content's one-finger kinetic scrolling.
+        # FingerScrollArea accepts emulated mouse drags from DSI touch drivers,
+        # while preserving short taps on the navigation buttons.
+        nav_scroll = FingerScrollArea()
         nav_panel = QWidget()
         nav_layout = QVBoxLayout(nav_panel)
         nav_layout.setContentsMargins(0, 0, 1, 0)
@@ -1711,7 +1711,7 @@ class Screen(QWidget):
             self.pages[name] = self._page(name, builder)
             self.stack.addWidget(self.pages[name])
         nav_layout.addStretch()
-        sl.addWidget(label('v0.3.9 alpha', 'caption'))
+        sl.addWidget(label('v0.3.10 alpha', 'caption'))
         # IMPORTANT: Qt otherwise deletes self.connection and all nav buttons.
         outer.addWidget(sidebar)
         sidebar.setVisible(not self.compact)
