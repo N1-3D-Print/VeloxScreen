@@ -6,9 +6,12 @@
 Responsive layout for small Raspberry Pi touchscreens (experimental 320 × 240 to 1024 × 600). No browser required.
 
 > [!WARNING]
-> **Early Alpha (v0.3.11)** — bugs and incomplete features are expected. Test printer controls carefully. Found an issue? **Please open a GitHub Issue!** Feedback and suggestions are welcome.
+> **Early Alpha (v0.3.12)** — bugs and incomplete features are expected. Test printer controls carefully. Found an issue? **Please open a GitHub Issue!** Feedback and suggestions are welcome.
 
 ## Features
+
+- **Recovery:** After M112, choose Restart Klipper, Firmware Restart, or Reboot Host. Access recovery options anytime from Print and Settings. All recovery actions require confirmation; a stopped print cannot be resumed.
+
 
 - **Jog settings:** invert X/Y/Z movement buttons separately and choose manual speeds in mm/s (saved to `veloxscreen.conf`).
 

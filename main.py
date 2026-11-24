@@ -100,6 +100,7 @@ class Network(QObject):
     err = pyqtSignal(str)
     reply = pyqtSignal(str)
     gcode_messages = pyqtSignal(object)
+    emergency_triggered = pyqtSignal()
 
     def __init__(self, url):
         super().__init__()
@@ -200,8 +201,30 @@ class Network(QObject):
             try:
                 self.call('/printer/emergency_stop', method='POST')
                 self.reply.emit('Emergency stop sent to Moonraker.')
+                self.emergency_triggered.emit()
             except Exception as exc:
                 self.err.emit('Emergency stop request failed: ' + str(exc))
+        threading.Thread(target=work, daemon=True).start()
+
+    def recovery_action(self, action):
+        """Use direct Moonraker endpoints, never the G-Code FIFO after an M112."""
+        endpoints = {
+            'klipper': ('/printer/restart', 'Klipper restart requested.'),
+            'firmware': ('/printer/firmware_restart', 'Firmware restart requested.'),
+            'host': ('/machine/reboot', 'Host reboot requested.'),
+        }
+        if action not in endpoints:
+            self.err.emit('Unknown recovery action.')
+            return
+        path, message = endpoints[action]
+        def work():
+            try:
+                self.call(path, method='POST')
+                self.reply.emit(message)
+            except Exception as exc:
+                # The host may deliberately disconnect Moonraker during a reboot.
+                # A failed request is not automatically proof of a successful restart.
+                self.err.emit('Recovery request status unknown: ' + str(exc))
         threading.Thread(target=work, daemon=True).start()
 
     def script(self, script):
@@ -1601,6 +1624,7 @@ class Screen(QWidget):
         self.network.err.connect(self.error)
         self.network.reply.connect(self.response)
         self.network.gcode_messages.connect(self.handle_gcode_messages)
+        self.network.emergency_triggered.connect(self.open_recovery_menu)
         self.busy_files = False
         self.selected_file = ''
         self.pages = {}
@@ -1719,7 +1743,7 @@ class Screen(QWidget):
             self.pages[name] = self._page(name, builder)
             self.stack.addWidget(self.pages[name])
         nav_layout.addStretch()
-        sl.addWidget(label('v0.3.11 alpha', 'caption'))
+        sl.addWidget(label('v0.3.12 alpha', 'caption'))
         # IMPORTANT: Qt otherwise deletes self.connection and all nav buttons.
         outer.addWidget(sidebar)
         sidebar.setVisible(not self.compact)
@@ -1994,6 +2018,7 @@ class Screen(QWidget):
         stop.setToolTip('Immediately stops Klipper. Requires firmware restart/recovery.')
         stop.clicked.connect(self.request_emergency_stop)
         l.addWidget(stop)
+        l.addWidget(button('Restart / Recovery options', self.open_recovery_menu))
 
         grid = QGridLayout()
         self.print_metrics = {}
@@ -2031,6 +2056,75 @@ class Screen(QWidget):
                                QMessageBox.No) != QMessageBox.Yes:
             return
         self.network.emergency_stop()
+
+    def open_recovery_menu(self):
+        """Touch-friendly recovery UI after M112 or an MCU shutdown.
+
+        Keeping an entry point on Print and Settings makes recovery possible
+        when the M112 popup is dismissed or the UI was restarted.
+        """
+        existing = getattr(self, '_recovery_dialog', None)
+        if existing is not None and existing.isVisible():
+            existing.raise_()
+            return
+        dialog = QDialog(self)
+        dialog.setWindowTitle('Klipper Recovery')
+        dialog.setModal(True)
+        screen = QApplication.primaryScreen()
+        geometry = screen.availableGeometry() if screen is not None else None
+        width = geometry.width() if geometry is not None else 800
+        height = geometry.height() if geometry is not None else 480
+        dialog.resize(min(max(240, int(width * .86)), width),
+                      min(max(180, int(height * .83)), height))
+        outer = QVBoxLayout(dialog)
+        outer.setContentsMargins(7, 7, 7, 7)
+        info = label('Klipper has stopped or needs recovery. Select an action below. '
+                     'A restart does not resume the interrupted print.', 'caption')
+        info.setWordWrap(True)
+        outer.addWidget(info)
+        area = FingerScrollArea()
+        content = QWidget()
+        controls = QVBoxLayout(content)
+        controls.setContentsMargins(3, 3, 3, 3)
+        controls.setSpacing(6)
+        for title, action in (
+                ('Restart Klipper', 'klipper'),
+                ('Firmware Restart', 'firmware'),
+                ('Reboot Host (Raspberry Pi)', 'host')):
+            b = button(title, partial(self._choose_recovery_action, action))
+            b.setMinimumHeight(43)
+            controls.addWidget(b)
+        controls.addStretch()
+        area.setWidget(content)
+        outer.addWidget(area, 1)
+        outer.addWidget(button('Close', dialog.reject))
+        self._recovery_dialog = dialog
+        dialog.finished.connect(lambda _: setattr(self, '_recovery_dialog', None))
+        dialog.open()  # Non-blocking; network polling remains active.
+
+    def _choose_recovery_action(self, action):
+        descriptions = {
+            'klipper': ('Restart Klipper',
+                        'Restart the Klipper software process? The current print will not resume.'),
+            'firmware': ('Firmware Restart',
+                         'Restart Klipper and reinitialize the connected MCUs? '
+                         'Do this only when the hardware fault is resolved.'),
+            'host': ('Reboot Host',
+                     'Reboot the Raspberry Pi / host operating system? '
+                     'This disconnects the touchscreen, SSH and Moonraker. '
+                     'Do not reboot during an active print.'),
+        }
+        if action not in descriptions:
+            return
+        name, explanation = descriptions[action]
+        if QMessageBox.warning(self, name, explanation + '\n\nContinue?',
+                               QMessageBox.Yes | QMessageBox.No,
+                               QMessageBox.No) != QMessageBox.Yes:
+            return
+        dialog = getattr(self, '_recovery_dialog', None)
+        if dialog is not None:
+            dialog.accept()
+        self.network.recovery_action(action)
 
     def update_print_fans(self, st):
         """Independent sliders for the print page; shares pending commands with Control."""
@@ -2687,6 +2781,11 @@ class Screen(QWidget):
         duration_row.addWidget(self.notification_duration_combo)
         c.addLayout(duration_row)
         c.addWidget(button('Test popup', lambda: self.show_notification('IDEX: T1 active (test)', force=True)))
+        l.addWidget(f)
+        f, c = card('Klipper / Host Recovery')
+        c.addWidget(label('Use after an emergency stop, MCU shutdown or Klipper error. '
+                          'Each action asks for confirmation. These actions will not resume a print.', 'caption'))
+        c.addWidget(button('Open Recovery Controls', self.open_recovery_menu, True))
         l.addWidget(f)
         f, c = card('Service Control')
         c.addWidget(button('VeloxScreen neu starten', self.restart_screen, True))

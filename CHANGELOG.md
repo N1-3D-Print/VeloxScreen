@@ -1,3 +1,13 @@
+## v0.3.12-alpha — Emergency-stop recovery controls
+
+- Automatically open a recovery dialog after the M112 emergency-stop request succeeds.
+- Actions: Restart Klipper (`POST /printer/restart`), Firmware Restart (`POST /printer/firmware_restart`), and Reboot Host (`POST /machine/reboot`).
+- Recovery menu remains accessible from Print and Settings if dismissed, or after a later UI restart.
+- Confirmation required for every recovery action; emergency stop itself retains its own confirmation.
+- Recovery requests bypass the queued G-code worker. The host reboot may disconnect the display/network.
+- Does not automatically resume a failed print. Moonraker must permit the requested operation.
+- Native Qt on-device test pending. Includes v0.3.11 jog settings and all previous features.
+
 ## v0.3.11-alpha — Jog settings
 
 - Settings: invert X, Y and Z jogging independently; adjust per-axis manual jog speed in mm/s.
