@@ -145,4 +145,4 @@ No change required for supported standard probes or mechanical endstops. For a s
 
 `[display] cursor_style = dot` (default) uses a small white dot with a dark outline inside VeloxScreen, including Qt dialogs. `hidden` hides the cursor; `system` restores the normal OS pointer. Select the style in Settings → Display comfort, save, then restart VeloxScreen. The operating-system cursor theme is not changed.
 
-Dashboard and Print both provide a fixed emergency stop. Host shutdown moved to Settings → Service Control and retains its separate confirmation and idle checks.
+Dashboard and Print share a compact emergency stop fixed at the top right. Host shutdown moved to Settings → Service Control and retains its separate confirmation and idle checks.

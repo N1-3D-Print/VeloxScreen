@@ -6,12 +6,12 @@
 Responsive layout for small Raspberry Pi touchscreens (experimental 320 × 240 to 1024 × 600). No browser required.
 
 > [!WARNING]
-> **Early Alpha (v0.4.2)** — bugs and incomplete features are expected. Test printer controls carefully. Found an issue? **Please open a GitHub Issue!** Feedback and suggestions are welcome.
+> **Early Alpha (v0.4.3)** — bugs and incomplete features are expected. Test printer controls carefully. Found an issue? **Please open a GitHub Issue!** Feedback and suggestions are welcome.
 
 ## Features
 
 - **Design cleanup:** consistent theme-derived number fields, transparent ordinary labels, unified cards, controls and progress bars. Default small-dot pointer; hidden or standard system cursor selectable in Display comfort.
-- **Dashboard emergency stop:** pinned red M112 action replaces the Dashboard host shutdown. Both Dashboard and Print use the same dedicated Moonraker emergency endpoint with mandatory confirmation.
+- **Emergency stop:** a compact red button fixed at the top right of both Dashboard and Print replaces the full-width Print stop bar. Both pages use the same dedicated Moonraker emergency endpoint with mandatory confirmation. Host shutdown remains in Settings.
 
 - **Advanced Print Monitor:** large estimated time remaining and finish-at clock, progress, thumbnails, layer count, filament usage, active tool, Pause/Resume/Cancel, live Z adjustment with optional confirmed permanent calibration save and temperature history. The emergency stop stays pinned.
 - **Quick actions:** choose and reorder shortcuts, presets and macro favorites in Settings. Swipe the bar with one finger.
@@ -58,7 +58,7 @@ auto_open = true
 
 **Print temperatures:** view actual and target temperatures for every discovered hotend, bed and generic heater. Tap the target to edit it using the touch keypad. Chamber sensors are read-only; heater editing requires reported limits and live data.
 
-**Emergency Stop:** a fixed red button on both Dashboard and Print always requires confirmation, regardless of normal command confirmation settings. It calls Moonraker `/printer/emergency_stop` directly, not the normal G-Code queue. It immediately puts Klipper into an emergency shutdown state; recovery will be necessary. Do **not** use it for ordinary pause/cancel actions. 
+**Emergency Stop:** a compact red button fixed at the top right of both Dashboard and Print always requires confirmation, regardless of normal command confirmation settings. It calls Moonraker `/printer/emergency_stop` directly, not the normal G-Code queue. It immediately puts Klipper into an emergency shutdown state; recovery will be necessary. Do **not** use it for ordinary pause/cancel actions. 
 
 **Print fans:** only `fan` and `fan_generic` objects are shown, with manual speed controls. `temperature_fan`, `controller_fan`, `heater_fan` and other automatic fans are hidden on Print. The general Control page is unchanged.
 

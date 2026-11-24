@@ -2,6 +2,8 @@
 
 ## Print monitor
 
+- Emergency Stop stays fixed at the top right, outside the scroll area (v0.4.3). It always requires confirmation and is separate from normal print controls.
+
 - **TIME REMAINING** and **FINISH AT · EST.** are at the top of Print. The finish clock uses the host time zone, including the date for jobs finishing on a later day. Estimate blends slicer `estimated_time` with observed print duration and progress. Very early prints without a slicer estimate show a placeholder. Paused prints show PAUSED instead of a fixed finish clock. Speed changes, preheat, tool changes and slicer estimates can affect accuracy.
 - Preview comes from Moonraker file metadata. Files without embedded thumbnails have no preview. Layer values are read from `print_stats.info` and metadata; current layer requires appropriate slicer reporting (e.g. SET_PRINT_STATS_INFO). Missing information is not fabricated.
 - Filament length is from `print_stats.filament_used`. To enable an approximate mass, enter filament density in Settings > Display comfort or `[print_view] filament_density`. Use only for prints with the same material density and filament diameter on all tools. No per-tool material accounting is implied.

@@ -60,11 +60,18 @@ class DesignTests(unittest.TestCase):
     def test_shared_button_and_shutdown_placement(self):
         cls = next(n for n in TREE.body if isinstance(n, ast.ClassDef) and n.name == 'Screen')
         methods = {n.name: ast.unparse(n) for n in cls.body if isinstance(n, ast.FunctionDef)}
-        self.assertIn('self.make_emergency_button(compact=True)', methods['_build'])
-        self.assertIn('self.make_emergency_button()', methods['make_print_view'])
+        self.assertIn('self.safety_stop_button = self.make_emergency_button()', methods['_build'])
+        self.assertNotIn('make_emergency_button', methods['make_print_view'])
+        self.assertIn('Qt.AlignRight | Qt.AlignVCenter', methods['_build'])
+        self.assertLess(methods['_build'].index('content_layout.addWidget(self.safety_header)'), methods['_build'].index('content_layout.addWidget(self.stack, 1)'))
+        self.assertNotIn('M112', methods['make_emergency_button'])
+        self.assertIn("QPushButton(tr('EMERGENCY STOP'))", methods['make_emergency_button'])
+        self.assertIn('QSizePolicy.Fixed, QSizePolicy.Fixed', methods['make_emergency_button'])
         self.assertIn('stop.clicked.connect(self.request_emergency_stop)', methods['make_emergency_button'])
         self.assertNotIn('self.request_host_shutdown', methods['make_dashboard'])
         self.assertIn('self.request_host_shutdown', methods['make_settings'])
-        self.assertIn("self.dashboard_header.setVisible(name == 'Dashboard')", methods['navigate'])
+        self.assertIn("self.safety_header.setVisible(name in ('Dashboard', 'Print'))", methods['navigate'])
+        self.assertIn("self.safety_header_title.setText(tr(name))", methods['navigate'])
+        self.assertIn("if name not in ('Dashboard', 'Print'):", methods['_page'])
 
 if __name__ == '__main__': unittest.main()

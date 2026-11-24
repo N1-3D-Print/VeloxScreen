@@ -1,3 +1,8 @@
+## v0.4.3-alpha — Compact Print emergency stop
+
+- Use one shared fixed top-right Emergency Stop header on Dashboard and Print; remove the full-width Print stop bar and M112 suffix from the button label.
+- Keep mandatory confirmation (No selected by default), direct Moonraker emergency endpoint and recovery behavior unchanged. No config migration. Native Qt/touch testing pending.
+
 ## v0.4.2-alpha — Design cleanup and dashboard emergency stop
 
 - Separate structural Qt widgets, labels, cards and intentional readout backgrounds. Consistent theme-derived values, numeric inputs, section titles, selection, disabled buttons and progress bar styling; retain live heating and fault colors.

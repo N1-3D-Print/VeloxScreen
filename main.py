@@ -2554,7 +2554,7 @@ class Screen(QWidget):
             self.pages[name] = self._page(name, builder)
             self.stack.addWidget(self.pages[name])
         nav_layout.addStretch()
-        sl.addWidget(label('v0.4.2 alpha', 'caption'))
+        sl.addWidget(label('v0.4.3 alpha', 'caption'))
         # IMPORTANT: Qt otherwise deletes self.connection and all nav buttons.
         outer.addWidget(sidebar)
         sidebar.setVisible(not self.compact)
@@ -2583,16 +2583,18 @@ class Screen(QWidget):
         self.quick_bar.setWidget(self.quick_panel)
         self.quick_bar.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
         content_layout.addWidget(self.quick_bar)
-        self.dashboard_header = QWidget()
-        dashboard_header_layout = QHBoxLayout(self.dashboard_header)
-        dashboard_header_layout.setContentsMargins(9, 5, 9, 3)
-        dashboard_header_layout.setSpacing(6)
-        dashboard_header_layout.addWidget(label('Dashboard', 'title'), 1)
-        self.dashboard_stop_button = self.make_emergency_button(compact=True)
-        dashboard_header_layout.addWidget(self.dashboard_stop_button)
-        content_layout.addWidget(self.dashboard_header)
+        # Shared fixed header: emergency stop is always at the top right on
+        # Dashboard and Print, outside all scrolling/reorderable controls.
+        self.safety_header = QWidget()
+        safety_header_layout = QHBoxLayout(self.safety_header)
+        safety_header_layout.setContentsMargins(9, 5, 9, 3)
+        safety_header_layout.setSpacing(6)
+        self.safety_header_title = label('Dashboard', 'title')
+        safety_header_layout.addWidget(self.safety_header_title, 1)
+        self.safety_stop_button = self.make_emergency_button()
+        safety_header_layout.addWidget(self.safety_stop_button, 0, Qt.AlignRight | Qt.AlignVCenter)
+        content_layout.addWidget(self.safety_header)
         content_layout.addWidget(self.stack, 1)
-        content_layout.addWidget(self.print_stop_button)
         outer.addWidget(content_side, 1)
         self.apply_layout_orders()
         self.rebuild_quick_bar()
@@ -2700,7 +2702,7 @@ class Screen(QWidget):
         content = QVBoxLayout(container)
         content.setContentsMargins(9, 7, 9, 9)
         content.setSpacing(7)
-        if name != 'Dashboard':
+        if name not in ('Dashboard', 'Print'):
             content.addWidget(label(name, 'title'))
         builder(content)
         content.addStretch()
@@ -2709,8 +2711,8 @@ class Screen(QWidget):
 
     def navigate(self, name):
         self.stack.setCurrentWidget(self.pages[name])
-        self.print_stop_button.setVisible(name == 'Print')
-        self.dashboard_header.setVisible(name == 'Dashboard')
+        self.safety_header_title.setText(tr(name))
+        self.safety_header.setVisible(name in ('Dashboard', 'Print'))
         if self.compact_nav is not None:
             names = self.nav_order
             self.compact_nav.blockSignals(True)
@@ -3041,10 +3043,6 @@ class Screen(QWidget):
         c.addWidget(self.print_estimate_info)
         l.addWidget(f)
 
-        # Pinned outside the print scroller; remains reachable while scrolling.
-        stop = self.make_emergency_button()
-        self.print_stop_button = stop
-        stop.hide()
         actions = QHBoxLayout()
         self.print_actions = {}
         for name in ('pause', 'resume', 'cancel'):
@@ -3148,12 +3146,12 @@ class Screen(QWidget):
         c.addWidget(self.temp_history)
         l.addWidget(f)
 
-    def make_emergency_button(self, compact=False):
-        stop = QPushButton(tr('EMERGENCY STOP' if compact else 'EMERGENCY STOP  ·  M112'))
+    def make_emergency_button(self):
+        stop = QPushButton(tr('EMERGENCY STOP'))
         stop.setObjectName('danger')
         stop.setMinimumHeight(36 if self.tiny else 44)
-        if compact or self.tiny:
-            stop.setStyleSheet('QPushButton#danger { font-size: 12px; padding: 4px 7px; min-height: 28px; }')
+        stop.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        stop.setStyleSheet('QPushButton#danger { font-size: 12px; padding: 4px 7px; min-height: 28px; }')
         stop.setToolTip(tr('Immediately stops Klipper. Requires firmware restart/recovery.'))
         stop.clicked.connect(self.request_emergency_stop)
         return stop
