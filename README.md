@@ -8,43 +8,42 @@ Responsive layout for small Raspberry Pi touchscreens (experimental 320 × 240 t
 > [!WARNING]
 > **Early Alpha (v0.4.7)** — bugs and incomplete features are expected. Test printer controls carefully. Found an issue? **Please open a GitHub Issue!** Feedback and suggestions are welcome.
 
+## What's new in v0.4.7 Alpha
+
+**Graphical Exclude Object** is the latest addition: select a part directly in the XY bed view, zoom to the occupied area with **Fit objects**, then confirm exclusion. The view uses Klipper's object polygons, with a named list for missing or overlapping geometry. Blue indicates selection, green indicates the current object and red hatching indicates excluded objects. Exclusion is permanent for the current job.
+
+| Print monitor | Graphical Exclude Object |
+|:---:|:---:|
+| ![Print monitor UI preview](screenshots/02_print_monitor.png) | ![Graphical object exclusion UI preview](screenshots/05_exclude_object.png) |
+| **Toolhead control** | **Print Files** |
+| ![Toolhead control UI preview](screenshots/03_toolhead_control.png) | ![Print Files UI preview](screenshots/04_print_files.png) |
+
+*Reconstructed UI previews based on v0.4.7 source code with simulated data; not native Qt captures or photos of a running printer. Actual layout varies by screen size, theme and printer configuration.*
+
 ## Features
 
-- **Print Files:** G-code-only thumbnail cards, newest first, six files per page, filename/folder, estimated time (when provided by Moonraker), and confirmed print start. Preview requests run in a bounded background worker; no config files are shown.
-- **Exclude Object:** during printing or pause, tap an object in a proportional XY bed view using Klipper's actual object polygons. Blue = selected, green = currently printing, red hatched = excluded. Fit objects enlarges the occupied area. The normal map uses reported XY travel limits (which may include parking space), not a measured physical bed outline. Center-only objects appear as approximate point markers; objects without coordinates and overlapping footprints can be selected by name in the list. Confirm the one-way `EXCLUDE_OBJECT NAME=...` request separately. Requires `[exclude_object]` in Klipper and G-code containing object definitions (enable object labeling/exclusion in the slicer or Moonraker object processing as appropriate). No automatic config changes.
+| Area | Highlights |
+|---|---|
+| **Print monitor** | Prominent estimated time remaining and finish-at clock, progress, thumbnail, layers, filament usage, active tool and Pause / Resume / Cancel. Optional automatic Print page on job start. |
+| **Live print controls** | Speed and flow overrides (M220/M221), actual motion metrics, editable heater targets, manual fans, live Z-offset and temperature history. |
+| **Print Files** | G-code-only thumbnail cards, filename, folder and estimated duration where available. Six files per page, newest first, background preview loading and confirmed print start. |
+| **Graphical Exclude Object** | Tap true object polygons, fit the occupied area, inspect current/excluded states, confirm exclusion. Named-list fallback. |
+| **Toolhead control** | Live XYZ G-code and machine positions, directional jog, visible step buttons (50 mm default), Home all/XY/X/Y/Z, homing animation and Motors Off. Z-Tilt and QGL when detected. |
+| **Temperature management** | Multi-hotend, bed and generic heater support; red heating, green at target, amber cooling; active preset highlighting based on live targets. |
+| **Babystepping** | 0.005 / 0.010 / 0.025 / 0.050 mm steps; optional confirmed permanent Z calibration save on supported single-tool systems after print completion. |
+| **Customization** | Reorder blocks, navigation, fans, sensors, macros and presets; choose quick actions and theme colors; adjust UI scale and language (English / German). |
+| **Display comfort** | Idle dim/blank, keep-on-print, optional hardware backlight/DPMS, font/button sizing, startup page, dot cursor and slide-to-unlock cleaning lock. |
+| **Notifications** | Local optional history of up to 150 events, category filters and individual popup preferences. |
+| **Safety and recovery** | Fixed compact Emergency Stop on Dashboard and Print, original Klipper fault text, confirmed firmware restart / Klipper restart / host reboot, separately guarded host shutdown. |
+| **Other controls** | Extrusion, pressure advance, firmware retract, bed mesh, G-code console, LED effects, macro visibility, experimental NetworkManager Wi-Fi. |
 
-- **Toolhead control:** Mainsail-inspired XYZ G-code and machine coordinate readouts, homed status per axis, XY directional pad, Z jog, step size, Home all/XY/X/Y/Z, and detected Z-Tilt/QGL in one responsive Control block. Manual movement requires a verified idle printer; jog requires the relevant homed axis. Existing per-axis jog settings and layout ordering are retained. Home buttons are grey until their axes are homed, then blue. A spinning indicator and temporary motion lock show a locally requested homing operation until Klipper responds and fresh status arrives. Visible step buttons default to 50 mm for XYZ; select a smaller increment near travel limits.
+### Object exclusion requirements
 
-- **Design cleanup:** consistent theme-derived number fields, transparent ordinary labels, unified cards, controls and progress bars. Default small-dot pointer; hidden or standard system cursor selectable in Display comfort.
-- **Emergency stop:** a compact red button fixed at the top right of both Dashboard and Print replaces the full-width Print stop bar. Both pages use the same dedicated Moonraker emergency endpoint with mandatory confirmation. Host shutdown remains in Settings.
+Add `[exclude_object]` to your Klipper configuration if it is not already present, and enable object labeling/exclusion in your slicer or Moonraker object processing as appropriate. The map uses reported XY travel limits, which may include IDEX parking space; it is not a measured plate outline. Center-only objects use point markers. Object selection does not send G-code; the separate confirmation does.
 
-- **Advanced Print Monitor:** large estimated time remaining and finish-at clock, progress, thumbnails, layer count, filament usage, active tool, Pause/Resume/Cancel, live Z adjustment with optional confirmed permanent calibration save and temperature history. The emergency stop stays pinned.
-- **Quick actions:** choose and reorder shortcuts, presets and macro favorites in Settings. Swipe the bar with one finger.
-- **Display comfort:** inactivity dim/blank, optional physical backlight/DPMS, keep-on-print, adjustable font/button sizing, startup page and slide-to-unlock cleaning lock.
-- **Notification center:** filter print, heating, filament, G-Code and warning events; optional local history and configurable popups.
+### Homing and Z-offset notes
 
-- **Live heating status:** red when heating to a target, green within 2 °C of the target, amber when cooling to a lower target. Matching temperature presets are highlighted on Dashboard and Temperatures; live heater states are shown on Dashboard, Print and Temperatures. Off or unavailable heaters are not highlighted.
-
-- **Custom layout:** reorder page blocks, navigation, fans, temperature tiles, macros and presets in Settings. Optional drag mode or touch-friendly Up/Down buttons; saves per printer.
-
-- **Host shutdown:** button in Settings → Service Control with independent optional confirmation (enabled by default). Blocked during active/paused prints or unverified status; let hotends cool first. Shuts down the OS via Moonraker, not the printer power supply.
-- **Recovery:** Automatically opens on Klipper error, shutdown or disconnection, including faults triggered externally. Shows the original Klipper state message, a persistent status banner and confirmed Firmware Restart, Restart Klipper and Host Reboot actions. Correct the underlying fault first. A stopped print cannot be resumed.
-
-
-- **Jog settings:** invert X/Y/Z movement buttons separately and choose manual speeds in mm/s (saved to `veloxscreen.conf`).
-
-
-- **Print view:** opens automatically when printing starts (optional), with live print progress, actual speed, extrusion flow and acceleration limit, M220/M221 override buttons, fan sliders and adjustable live heater temperatures. An always-confirmed emergency stop uses Moonraker's dedicated emergency endpoint.
-- **Navigation:** larger, one-finger scrollable sidebar on 800 × 480 and larger displays; compact dropdown navigation on small screens.
-
-- **Network:** Wi-Fi scan, signal, IP address and connection via NetworkManager (experimental, permission-dependent).
-
-
-- **Dashboard:** live speed, flow, acceleration, M220/M221, temperatures and homing.
-- **Printer controls:** tools, heaters, fan sliders, pressure advance and firmware retract.
-- **Customization:** unlimited temperature presets, macros, themes and `veloxscreen.conf`.
-- **Extras:** Bed Mesh, G-Code console, LED Effects, notifications and animated startup.
-- **Languages:** English (default) and German.
+Homing buttons are grey until their axes are reported homed, then blue. Locally requested homing displays an animated busy indicator and blocks repeated motion until the command result and fresh status are received. External homing updates the reported axis states. Jog requires an idle printer and the relevant homed axis; choose a smaller step near limits. Permanent Z-offset saving is restricted to supported, unambiguous single-tool calibration methods. Eddy scan/tap requires explicit configuration; custom multi-tool offsets are not automatically saved. **Save after print** is a reminder, not an automatic SAVE_CONFIG. See [Z-offset guide](docs/Z_OFFSET.md).
 
 ## Customize the layout
 
@@ -78,17 +77,17 @@ Open **Settings → Display comfort**, **Quick actions**, and **Notification pre
 - To override font/UI sizing, set `[display]` → `ui_scale = 1.15` in `~/printer_data/config/veloxscreen.conf` and restart the UI.
 - **Early alpha:** 2.8-inch / 320×240 displays have tight controls; keypad and complex edit dialogs may need further work. A screen's physical size cannot be detected reliably from resolution alone.
 
-## Screenshots
+## More UI previews
 
-*UI previews with simulated printer data — not photos of a running printer.*
-
-| Dashboard | Bed Mesh |
+| Dashboard | Live heating & presets |
 |:---:|:---:|
-| ![Dashboard demo](screenshots/01_dashboard_motion.png) | ![Bed mesh demo](screenshots/04_bed_mesh.png) |
-| **LED Effects** | **Macros** |
-| ![LED effects demo](screenshots/05_led_effects.png) | ![Macros demo](screenshots/06_macros.png) |
+| ![Dashboard UI preview](screenshots/01_dashboard.png) | ![Temperature UI preview](screenshots/06_temperatures.png) |
+| **Notification center** | **Custom layout** |
+| ![Notifications UI preview](screenshots/07_notifications.png) | ![Layout editor UI preview](screenshots/08_customize_layout.png) |
+| **Recovery** | **Cleaning lock** |
+| ![Recovery UI preview](screenshots/09_recovery.png) | ![Cleaning lock UI preview](screenshots/10_cleaning_lock.png) |
 
-[View all screenshots](screenshots/README.md)
+[Full preview gallery](screenshots/README.md) · [Release history](CHANGELOG.md)
 
 ## Installation (copy & paste)
 
@@ -112,14 +111,11 @@ Once complete and **no print is running**:
 sudo reboot
 ```
 
-**Update an already working installation** (does not redo X11/autologin):
+**Update an already working Git installation** (does not redo X11/autologin):
 
 ```bash
-cd ~
-[ -d VeloxScreen/.git ] || git clone https://github.com/N1-3D-Print/VeloxScreen.git
-cd VeloxScreen
-git pull --ff-only
-bash scripts/install.sh --skip-deps
+cd ~/VeloxScreen
+git pull --ff-only && bash scripts/install.sh --skip-deps
 ```
 
 For custom kiosk/console setups see [Advanced installation](docs/INSTALL.md).

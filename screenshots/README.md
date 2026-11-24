@@ -1,19 +1,66 @@
-# VeloxScreen Screenshots
+# VeloxScreen v0.4.7 Alpha — UI previews
 
-**VeloxScreen v0.3.5 Alpha** — 800 × 480 UI previews with simulated values. **Not screenshots captured from a connected printer.**
+These 1024 × 600 layout reconstructions use the actual v0.4.7 source structure, controls and default palette with simulated printer data and illustrative thumbnails. They are **not native Qt screenshots or connected-printer captures**. Exact dimensions and scrolling vary by device and configuration.
 
-| Preview | File |
-|---|---|
-| Dashboard / Motion | `01_dashboard_motion.png` |
-| Dashboard / Presets | `02_dashboard_presets.png` |
-| Temperatures | `03_temperatures.png` |
-| Bed Mesh | `04_bed_mesh.png` |
-| LED Effects | `05_led_effects.png` |
-| Macros | `06_macros.png` |
-| Console | `07_console.png` |
-| Tools / Retract | `08_tools_retract.png` |
-| Startup Splash | `09_startup_splash.png` |
+[Back to project README](../README.md)
 
-These images are for illustrating the UI. Actual device screenshots may differ.
+## Dashboard
 
-Note: these previews predate the v0.4.2 visual cleanup and may differ from the current interface.
+Live motion, overrides, compact emergency stop and temperature overview.
+
+![Dashboard reconstructed UI preview](01_dashboard.png)
+
+## Print Monitor
+
+Large remaining time and estimated finish clock, print actions and preview.
+
+![Print Monitor reconstructed UI preview](02_print_monitor.png)
+
+## Toolhead Control
+
+XYZ coordinates, 50 mm default step, jog and homing.
+
+![Toolhead Control reconstructed UI preview](03_toolhead_control.png)
+
+## Print Files
+
+Thumbnail-based G-code browser; illustrative sample models.
+
+![Print Files reconstructed UI preview](04_print_files.png)
+
+## Graphical Exclude Object
+
+XY bed map, current/selected/excluded polygons and fit control.
+
+![Graphical Exclude Object reconstructed UI preview](05_exclude_object.png)
+
+## Temperatures
+
+Live targets and preset highlighting.
+
+![Temperatures reconstructed UI preview](06_temperatures.png)
+
+## Notification Center
+
+Categorized local event history.
+
+![Notification Center reconstructed UI preview](07_notifications.png)
+
+## Customize Layout
+
+Reorder functional blocks with arrows or drag mode.
+
+![Customize Layout reconstructed UI preview](08_customize_layout.png)
+
+## Recovery
+
+Original error message and recovery actions.
+
+![Recovery reconstructed UI preview](09_recovery.png)
+
+## Cleaning Lock
+
+Slide-to-unlock touch cleaning mode.
+
+![Cleaning Lock reconstructed UI preview](10_cleaning_lock.png)
+
