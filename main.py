@@ -23,7 +23,7 @@ from PyQt5.QtWidgets import (
     QApplication, QWidget, QLabel, QPushButton, QVBoxLayout, QHBoxLayout,
     QScrollArea, QFrame, QGridLayout, QStackedWidget, QComboBox, QDoubleSpinBox, QCheckBox,
     QLineEdit, QPlainTextEdit, QMessageBox, QInputDialog, QSplitter, QSizePolicy, QDialog, QScroller, QScrollerProperties, QSlider,
-    QGraphicsOpacityEffect
+    QGraphicsOpacityEffect, QListWidget, QListWidgetItem, QAbstractItemView
 )
 
 BASE = Path(__file__).resolve().parent
@@ -62,6 +62,26 @@ def set_config(section, key, value):
         config.add_section(section)
     config.set(section, key, str(value))
     save_config()
+
+
+def read_layout_order(key):
+    """Accept old comma-separated fan_order and lossless JSON lists."""
+    raw = conf('layout', key, '').strip()
+    if raw.startswith('['):
+        try:
+            values = json.loads(raw)
+            if isinstance(values, list):
+                return list(dict.fromkeys(v for v in values if isinstance(v, str) and v.strip()))
+        except (ValueError, TypeError):
+            pass
+    return list(dict.fromkeys(v.strip() for v in raw.split(',') if v.strip()))
+
+
+def ordered_items(defaults, preferred):
+    """Ignore missing IDs, deduplicate, append newly discovered items."""
+    defaults = list(dict.fromkeys(defaults))
+    allowed = set(defaults)
+    return list(dict.fromkeys([v for v in preferred if v in allowed] + defaults))
 
 
 def options(section, key, fallback):
@@ -457,6 +477,20 @@ _I18N = [
 _I18N.sort(key=lambda p: len(p[0]), reverse=True)
 
 _ADDED_EN_DE = {
+    ('Customize layout', 'Layout anpassen'), ('Edit layout', 'Layout bearbeiten'),
+    ('Reorder blocks, navigation, fans and temperature tiles. Safety controls stay fixed.',
+     'Blöcke, Navigation, Lüfter und Temperaturkacheln sortieren. Sicherheitsfunktionen bleiben fest.'),
+    ('Dashboard blocks', 'Dashboard-Blöcke'), ('Print blocks', 'Druck-Blöcke'),
+    ('Control blocks', 'Steuerungs-Blöcke'), ('Tools blocks', 'Werkzeug-Blöcke'),
+    ('Temperature blocks', 'Temperatur-Blöcke'), ('Macro blocks', 'Makro-Blöcke'),
+    ('Settings blocks', 'Einstellungs-Blöcke'), ('Navigation', 'Navigation'),
+    ('Temperature tiles', 'Temperaturkacheln'), ('Macro buttons', 'Makro-Schaltflächen'),
+    ('Live motion', 'Live-Bewegungswerte'), ('Motion limits / Motors Off', 'Bewegungsgrenzen / Motoren aus'),
+    ('Print status', 'Druckstatus'), ('Run macros', 'Makros ausführen'),
+    ('Macro visibility', 'Makro-Sichtbarkeit'), ('Heaters / Sensors', 'Heizer / Sensoren'),
+    ('↑ Up', '↑ Hoch'), ('↓ Down', '↓ Runter'), ('Reset order', 'Reihenfolge zurücksetzen'),
+    ('Drag mode (hold and move)', 'Ziehmodus (halten und ziehen)'), ('Save layout', 'Layout speichern'),
+    ('Could not save layout:', 'Layout konnte nicht gespeichert werden:'),
     ('Temperature presets', 'Temperatur-Presets'),
     ('Edit presets', 'Presets bearbeiten'),
     ('Preset name', 'Preset-Name'),
@@ -1677,6 +1711,126 @@ class WifiSignals(QObject):
     failed = pyqtSignal(str)
 
 
+class LayoutOrderList(QListWidget):
+    order_changed = pyqtSignal()
+
+    def dropEvent(self, event):
+        # Qt 5 can implement an internal move as insert/remove, not rowsMoved.
+        super().dropEvent(event)
+        if event.isAccepted():
+            self.order_changed.emit()
+
+
+class LayoutEditor(QDialog):
+    """An explicit editing mode prevents ordinary swipes from moving controls."""
+    def __init__(self, parent, catalog):
+        super().__init__(parent)
+        self.catalog = catalog
+        self.changes = {}
+        self.key = None
+        self.loading = False
+        self.setWindowTitle(tr('Customize layout'))
+        self.setStyleSheet(touch_dialog_style(STYLE))
+        fit_dialog(self, 620, 440)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(5, 5, 5, 5)
+        outer.setSpacing(3)
+        self.category = QComboBox()
+        self.category.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
+        self.category.setMinimumContentsLength(12)
+        for key, (title, _) in catalog.items():
+            self.category.addItem(tr(title), key)
+        outer.addWidget(self.category)
+        self.items = LayoutOrderList()
+        self.items.setMinimumHeight(30)
+        self.items.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.items.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.items.setVerticalScrollMode(QAbstractItemView.ScrollPerPixel)
+        self.items.setSpacing(1)
+        self.items.setStyleSheet('QListWidget::item { padding: 5px; } '
+                                 'QListWidget::item:selected { background: ' + parent.theme['accent_color'] +
+                                 '; color: ' + text_on(parent.theme['accent_color']) + '; }' )
+        outer.addWidget(self.items, 1)
+        moves = QHBoxLayout()
+        self.up = button('↑ Up', partial(self.move_item, -1))
+        self.down = button('↓ Down', partial(self.move_item, 1))
+        self.reset = button('Reset order', self.reset_order)
+        for b in (self.up, self.down, self.reset):
+            b.setMinimumHeight(24 if parent.tiny else 36)
+            moves.addWidget(b)
+        outer.addLayout(moves)
+        self.drag = TouchCheckBox(tr('Drag mode (hold and move)'))
+        self.drag.setMinimumHeight(28 if parent.tiny else 34)
+        outer.addWidget(self.drag)
+        self.drag.toggled.connect(self.set_drag_mode)
+        actions = QHBoxLayout()
+        for text, callback, primary in (('Cancel', self.reject, False), ('Save layout', self.accept, True)):
+            b = button(text, callback, primary)
+            b.setMinimumHeight(24 if parent.tiny else 36)
+            actions.addWidget(b)
+        outer.addLayout(actions)
+        self.category.currentIndexChanged.connect(self.load_category)
+        self.items.currentRowChanged.connect(self.update_arrows)
+        self.items.order_changed.connect(self.record_order)
+        self.set_drag_mode(False)
+        self.load_category()
+
+    def set_drag_mode(self, enabled):
+        viewport = self.items.viewport()
+        QScroller.scroller(viewport).stop()
+        QScroller.ungrabGesture(viewport)
+        self.items.setDragDropMode(QAbstractItemView.InternalMove if enabled else QAbstractItemView.NoDragDrop)
+        self.items.setDefaultDropAction(Qt.MoveAction)
+        self.items.setDragEnabled(enabled)
+        self.items.setAcceptDrops(enabled)
+        self.items.setDropIndicatorShown(enabled)
+        if not enabled:
+            viewport.setAttribute(Qt.WA_AcceptTouchEvents, True)
+            QScroller.grabGesture(viewport, QScroller.LeftMouseButtonGesture)
+
+    def load_category(self, *_):
+        self.key = self.category.currentData()
+        entries = self.catalog[self.key][1]
+        names = dict(entries)
+        order = ordered_items(names, self.changes.get(self.key, read_layout_order(self.key)))
+        self.loading = True
+        self.items.clear()
+        for ident in order:
+            item = QListWidgetItem(names[ident])
+            item.setData(Qt.UserRole, ident)
+            item.setToolTip(names[ident])
+            self.items.addItem(item)
+        if self.items.count():
+            self.items.setCurrentRow(0)
+        self.loading = False
+        self.update_arrows()
+
+    def record_order(self, *_):
+        if not self.loading and self.key:
+            self.changes[self.key] = [self.items.item(i).data(Qt.UserRole)
+                                      for i in range(self.items.count())]
+            self.update_arrows()
+
+    def update_arrows(self, *_):
+        index = self.items.currentRow()
+        self.up.setEnabled(index > 0)
+        self.down.setEnabled(0 <= index < self.items.count() - 1)
+
+    def move_item(self, delta):
+        index = self.items.currentRow()
+        target = index + delta
+        if index < 0 or not 0 <= target < self.items.count():
+            return
+        self.items.insertItem(target, self.items.takeItem(index))
+        self.items.setCurrentRow(target)
+        self.items.scrollToItem(self.items.item(target))
+        self.record_order()
+
+    def reset_order(self):
+        self.changes[self.key] = []
+        self.load_category()
+
+
 class Screen(QWidget):
     def __init__(self):
         super().__init__()
@@ -1712,6 +1866,7 @@ class Screen(QWidget):
         self.selected_file = ''
         self.pages = {}
         self.nav_buttons = {}
+        self.layout_groups = {}
         self.macro_names = []
         self.macro_commands = {}
         self._fan_pending = {}
@@ -1808,13 +1963,16 @@ class Screen(QWidget):
                     ('LED Effects', self.make_led_effects), ('Dateien', self.make_files), ('Kalibrierung', self.make_calib),
                     ('Konsole', self.make_console), ('Makros', self.make_macros),
                     ('Network', self.make_network), ('Einstellungen', self.make_settings)]
+        self.nav_layout = nav_layout
+        self.nav_defaults = [name for name, _ in sections]
+        self.nav_order = list(self.nav_defaults)
         self.compact_nav = None
         if self.compact:
             self.compact_nav = QComboBox()
             self.compact_nav.setMinimumHeight(30 if self.tiny else 38)
             self.compact_nav.addItems([tr(name) for name, _ in sections])
             self.compact_nav.currentIndexChanged.connect(
-                lambda index: self.navigate(sections[index][0]) if index >= 0 else None)
+                lambda index: self.navigate(self.nav_order[index]) if 0 <= index < len(self.nav_order) else None)
             # Insert into the content column after its layout exists.
         for name, builder in sections:
             nav = QPushButton(tr(name))
@@ -1826,7 +1984,7 @@ class Screen(QWidget):
             self.pages[name] = self._page(name, builder)
             self.stack.addWidget(self.pages[name])
         nav_layout.addStretch()
-        sl.addWidget(label('v0.3.15 alpha', 'caption'))
+        sl.addWidget(label('v0.3.17 alpha', 'caption'))
         # IMPORTANT: Qt otherwise deletes self.connection and all nav buttons.
         outer.addWidget(sidebar)
         sidebar.setVisible(not self.compact)
@@ -1845,7 +2003,102 @@ class Screen(QWidget):
         content_layout.addWidget(self.health_banner)
         content_layout.addWidget(self.stack, 1)
         outer.addWidget(content_side, 1)
+        self.apply_layout_orders()
         self.navigate('Dashboard')
+
+    def layout_block(self, page, parent_layout, key, title):
+        if page not in self.layout_groups:
+            holder = QWidget()
+            inner = QVBoxLayout(holder)
+            inner.setContentsMargins(0, 0, 0, 0)
+            inner.setSpacing(7)
+            parent_layout.addWidget(holder)
+            self.layout_groups[page] = (inner, {})
+        inner, blocks = self.layout_groups[page]
+        frame = QWidget()
+        content = QVBoxLayout(frame)
+        content.setContentsMargins(0, 0, 0, 0)
+        content.setSpacing(7)
+        inner.addWidget(frame)
+        blocks[key] = (frame, title)
+        return content
+
+    def apply_layout_orders(self):
+        for key, (layout, blocks) in self.layout_groups.items():
+            for ident in ordered_items(blocks, read_layout_order(key)):
+                widget = blocks[ident][0]
+                layout.removeWidget(widget)
+                layout.addWidget(widget)
+        active = next((name for name, page in self.pages.items()
+                       if page is self.stack.currentWidget()), 'Dashboard')
+        self.nav_order = ordered_items(self.nav_defaults, read_layout_order('nav_order'))
+        for i, name in enumerate(self.nav_order):
+            widget = self.nav_buttons[name]
+            self.nav_layout.removeWidget(widget)
+            self.nav_layout.insertWidget(i, widget)
+        if self.compact_nav is not None:
+            self.compact_nav.blockSignals(True)
+            self.compact_nav.clear()
+            self.compact_nav.addItems([tr(name) for name in self.nav_order])
+            self.compact_nav.setCurrentIndex(self.nav_order.index(active))
+            self.compact_nav.blockSignals(False)
+
+    def layout_catalog(self):
+        """Return stable IDs and translated labels, plus the default ordering."""
+        groups = {'nav_order': ('Navigation', [(name, tr(name)) for name in self.nav_defaults])}
+        titles = {'dashboard_order': 'Dashboard blocks', 'print_order': 'Print blocks',
+                  'control_order': 'Control blocks', 'tools_order': 'Tools blocks',
+                  'temperatures_order': 'Temperature blocks', 'macros_order': 'Macro blocks',
+                  'settings_order': 'Settings blocks'}
+        for key, (_, blocks) in self.layout_groups.items():
+            groups[key] = (titles[key], [(ident, tr(title)) for ident, (_, title) in blocks.items()])
+        fans = sorted(n for n in self.all_objects if n == 'fan' or
+                      n.startswith(('fan_generic ', 'heater_fan ', 'temperature_fan ')))
+        temps = sorted((n for n in self.all_objects if n == 'extruder' or
+                       re.fullmatch(r'extruder\d+', n) or n == 'heater_bed' or
+                       n.startswith('heater_generic ')),
+                       key=lambda n: (0, 0) if n == 'extruder' else
+                       (0, int(n[8:])) if re.fullmatch(r'extruder\d+', n) else
+                       (1, 0) if n == 'heater_bed' else (2, n))
+        temps += sorted(n for n in self.all_objects if n.startswith(('temperature_sensor ', 'temperature_fan ')))
+        presets = list(config['temperature_presets']) if config.has_section('temperature_presets') else []
+        for key, title, defaults in (
+                ('fan_order', 'Fans', fans), ('temperature_order', 'Temperature tiles', temps),
+                ('macro_order', 'Macro buttons', sorted(self.macro_commands, key=str.casefold)),
+                ('preset_order', 'Temperature presets', presets)):
+            # Keep saved but currently unavailable IDs; changing a layout while offline
+            # must not discard a disconnected tool or a temporarily absent macro.
+            groups[key] = (title, [(n, n) for n in dict.fromkeys(defaults + read_layout_order(key))])
+        return groups
+
+    def open_layout_editor(self):
+        editor = LayoutEditor(self, self.layout_catalog())
+        if editor.exec_() != QDialog.Accepted or not editor.changes:
+            return
+        had_section = config.has_section('layout')
+        old = dict(config.items('layout')) if had_section else {}
+        if not had_section:
+            config.add_section('layout')
+        try:
+            for key, order in editor.changes.items():
+                # Keep the old fan_order format compatible with existing configs.
+                value = ', '.join(order) if key == 'fan_order' else json.dumps(order, ensure_ascii=False)
+                config.set('layout', key, value)
+            save_config()
+        except (OSError, ValueError) as exc:
+            config.remove_section('layout')
+            if had_section:
+                config.add_section('layout')
+                for key, value in old.items():
+                    config.set('layout', key, value)
+            warn(self, 'Customize layout', 'Could not save layout: ' + str(exc))
+            return
+        self.apply_layout_orders()
+        if 'macro_order' in editor.changes:
+            self._render_macro_buttons()
+        if 'preset_order' in editor.changes:
+            self.rebuild_presets()
+        # Dynamic temperature and fan views compare ordered signatures on the next poll.
 
     def _page(self, name, builder):
         scroll = FingerScrollArea()
@@ -1862,7 +2115,7 @@ class Screen(QWidget):
     def navigate(self, name):
         self.stack.setCurrentWidget(self.pages[name])
         if self.compact_nav is not None:
-            names = list(self.pages)
+            names = self.nav_order
             self.compact_nav.blockSignals(True)
             self.compact_nav.setCurrentIndex(names.index(name))
             self.compact_nav.blockSignals(False)
@@ -2058,7 +2311,8 @@ class Screen(QWidget):
             self.confirm_script(f'SET_VELOCITY_LIMIT {command}={val:g}', title)
 
     def rebuild_presets(self):
-        entries = list(config.items('temperature_presets')) if config.has_section('temperature_presets') else []
+        entries = dict(config.items('temperature_presets')) if config.has_section('temperature_presets') else {}
+        entries = [(name, entries[name]) for name in ordered_items(entries, read_layout_order('preset_order'))]
         for grid, columns in ((getattr(self, 'dashboard_presets', None), 3),
                               (getattr(self, 'temp_preset_grid', None), 2)):
             if grid is None:
@@ -2108,6 +2362,8 @@ class Screen(QWidget):
         l.addWidget(stop)
         l.addWidget(button('Restart / Recovery options', self.open_recovery_menu))
 
+        root = l
+        l = self.layout_block('print_order', root, 'motion', 'Live motion')
         grid = QGridLayout()
         self.print_metrics = {}
         for index, (title, unit, key) in enumerate((
@@ -2123,6 +2379,7 @@ class Screen(QWidget):
             grid.addWidget(f, index // cols, index % cols)
         l.addLayout(grid)
 
+        l = self.layout_block('print_order', root, 'temperatures', 'Print temperatures')
         f, c = card('Print temperatures')
         self.print_temp_info = label('Waiting for heater data...', 'caption')
         c.addWidget(self.print_temp_info)
@@ -2134,15 +2391,17 @@ class Screen(QWidget):
         self._print_temp_live = False
         l.addWidget(f)
 
+        l = self.layout_block('print_order', root, 'overrides', 'Speed / Flow Overrides')
         l.addWidget(label('Live overrides  ·  M220 / M221', 'caption'))
         self.add_override_controls(l)
 
+        l = self.layout_block('print_order', root, 'fans', 'Fans')
         f, c = card('Fans  ·  live control')
         self.print_fan_area = QVBoxLayout()
         self.print_fan_area.setSpacing(7)
         c.addLayout(self.print_fan_area)
         l.addWidget(f)
-        l.addWidget(label('Fans are discovered automatically. Temperature-controlled fans are read-only.', 'caption'))
+        l.addWidget(label('Manual fans only. Automatic fans are hidden on this page.', 'caption'))
 
     def request_emergency_stop(self):
         """Always confirm, even when normal macro confirmations are disabled."""
@@ -2256,11 +2515,9 @@ class Screen(QWidget):
         self.network.recovery_action(action)
 
     def update_print_fans(self, st):
-        """Independent sliders for the print page; shares pending commands with Control."""
-        fans = [x for x in self.all_objects if x == 'fan' or x.startswith(
-            ('fan_generic ', 'heater_fan ', 'temperature_fan '))]
-        desired = [x.strip() for x in conf('layout', 'fan_order').split(',') if x.strip()]
-        fans.sort(key=lambda name: (0, desired.index(name)) if name in desired else (1, name))
+        """Show only manually controllable Klipper fans on the print page."""
+        fans = [x for x in self.all_objects if x == 'fan' or x.startswith('fan_generic ')]
+        fans = ordered_items(sorted(fans), read_layout_order('fan_order'))
         signature = tuple(fans)
         if signature != self._print_fan_signature:
             self._print_fan_signature = signature
@@ -2289,7 +2546,7 @@ class Screen(QWidget):
                 self.print_fan_widgets[name] = (info, slider)
                 self.print_fan_area.addWidget(frame)
             if not fans:
-                self.print_fan_area.addWidget(label('No fans detected yet.', 'caption'))
+                self.print_fan_area.addWidget(label('No manual fans detected.', 'caption'))
         for name, (info, slider) in self.print_fan_widgets.items():
             current = round(fval(st.get(name, {}).get('speed')) * 100)
             pending = self._fan_pending.get(name)
@@ -2339,6 +2596,8 @@ class Screen(QWidget):
         self.shutdown_status.setTextFormat(Qt.PlainText)
         self.shutdown_status.hide()
         l.addWidget(self.shutdown_status)
+        root = l
+        l = self.layout_block('dashboard_order', root, 'motion', 'Live motion')
         grid = QGridLayout()
         for i, (title, unit, key) in enumerate([
             ('GESCHWINDIGKEIT', 'mm/s', 'speed'),
@@ -2361,6 +2620,7 @@ class Screen(QWidget):
                            i % (1 if self.tiny else 2 if self.compact else 3))
         l.addLayout(grid)
         # Live values stay large. The active motion limits are independently editable.
+        l = self.layout_block('dashboard_order', root, 'motion_limits', 'Motion limits / Motors Off')
         self.motion_limit_buttons = {}
         motion_bar = QHBoxLayout()
         for key, caption in [('velocity', 'Max speed'), ('accel', 'Max accel')]:
@@ -2377,13 +2637,16 @@ class Screen(QWidget):
         self.motor_off_buttons.append(motor_button)
         motion_bar.addWidget(motor_button)
         l.addLayout(motion_bar)
+        l = self.layout_block('dashboard_order', root, 'overrides', 'Speed / Flow Overrides')
         l.addWidget(label('Speed / Flow Overrides', 'caption'))
         self.add_override_controls(l)
+        l = self.layout_block('dashboard_order', root, 'print_status', 'Print status')
         f, c = card('Druckstatus')
         self.s['print'] = label('Moonraker wird verbunden ...')
         c.addWidget(self.s['print'])
         l.addWidget(f)
         # Stable, compact temperature overview instead of a long ad-hoc text line.
+        l = self.layout_block('dashboard_order', root, 'temperatures', 'Temperatures')
         f, c = card('Temperaturen  ·  Übersicht')
         self.dash_temp_grid = QGridLayout()
         self.dash_temp_grid.setSpacing(6)
@@ -2394,6 +2657,7 @@ class Screen(QWidget):
         c.addWidget(self.dash_temp_empty)
         c.addWidget(button('Alle Temperaturen ›', partial(self.navigate, 'Temperaturen')))
         l.addWidget(f)
+        l = self.layout_block('dashboard_order', root, 'presets', 'Temperature presets')
         f, c = card('Temperature presets')
         self.dashboard_presets = QGridLayout()
         self.dashboard_presets.setSpacing(6)
@@ -2402,6 +2666,7 @@ class Screen(QWidget):
         c.addWidget(label('Hotend presets use the currently selected tool; bed and chamber are independent.', 'caption'))
         l.addWidget(f)
         self.rebuild_presets()
+        l = self.layout_block('dashboard_order', root, 'homing', 'Homing')
         f, c = card('Homing  ·  getrennte Achsen')
         bar = QHBoxLayout()
         for axis in ['X', 'Y', 'Z', 'XY', 'ALLE']:
@@ -2413,6 +2678,8 @@ class Screen(QWidget):
         l.addWidget(f)
 
     def make_tools(self, l):
+        root = l
+        l = self.layout_block('tools_order', root, 'tool', 'Tool / Extruder / PA')
         f, c = card('Tool / Extruder')
         self.tool_selector = QComboBox()
         self.tool_selector.currentTextChanged.connect(self.update_tool)
@@ -2427,6 +2694,7 @@ class Screen(QWidget):
         self.pa_spin.setRange(0, 1)
         c.addLayout(row(self.pa_spin, button('Übernehmen', self.apply_pa, True)))
         l.addWidget(f)
+        l = self.layout_block('tools_order', root, 'retract', 'Firmware Retract')
         f, c = card('Firmware Retract')
         self.retract_spins = {}
         for title, key, maximum in [('Länge (mm)', 'retract_length', 100),
@@ -2443,6 +2711,7 @@ class Screen(QWidget):
         c.addLayout(row(button('Übernehmen', self.apply_retract, True),
                         button('Reset', self.reset_retract)))
         l.addWidget(f)
+        l = self.layout_block('tools_order', root, 'extrusion', 'Extrusion')
         f, c = card('Extrusion')
         c.addWidget(label('Extrusion nur bei ausreichend heißem, aktivem Hotend und ohne laufenden Druck. Klipper prüft zusätzlich seine Grenzwerte.', 'caption'))
         self.extrude_len = QComboBox()
@@ -2455,6 +2724,8 @@ class Screen(QWidget):
         l.addWidget(f)
 
     def make_temperatures(self, l):
+        root = l
+        l = self.layout_block('temperatures_order', root, 'heaters', 'Heaters / Sensors')
         l.addWidget(label('Heizer mit Sollwert · Sensoren nur Anzeige', 'caption'))
         self.temp_box, self.temp_content = card()
         self.temp_info = label('Verbindung zu Moonraker wird hergestellt ...')
@@ -2464,6 +2735,7 @@ class Screen(QWidget):
         self.temp_content.addLayout(self.temperature_grid)
         self.temp_widgets = {}
         l.addWidget(self.temp_box)
+        l = self.layout_block('temperatures_order', root, 'presets', 'Temperature presets')
         f, c = card('Temperatur-Presets  ·  veloxscreen.conf')
         self.temp_preset_grid = QGridLayout()
         self.temp_preset_grid.setSpacing(7)
@@ -2475,6 +2747,8 @@ class Screen(QWidget):
         self.rebuild_presets()
 
     def make_control(self, l):
+        root = l
+        l = self.layout_block('control_order', root, 'jog', 'Manual movement / Jog')
         f, c = card('Achsensteuerung')
         self.jog_step = QComboBox()
         self.jog_step.addItems([str(int(v)) if int(v)==v else str(v) for v in options('extrusion', 'jog_steps', '1, 5, 15, 25, 50')])
@@ -2496,9 +2770,11 @@ class Screen(QWidget):
         motor_row.addWidget(control_motor_button)
         c.addLayout(motor_row)
         l.addWidget(f)
+        l = self.layout_block('control_order', root, 'overrides', 'Speed / Flow Overrides')
         l.addWidget(label('Speed / Flow Overrides', 'caption'))
         self.add_override_controls(l)
         l.addWidget(label('Flow override is global for the G-Code stream, including tool changes.', 'caption'))
+        l = self.layout_block('control_order', root, 'fans', 'Fans')
         f, c = card('Lüfter  ·  automatisch erkannt')
         self.fan_area = QVBoxLayout()
         c.addLayout(self.fan_area)
@@ -2561,11 +2837,14 @@ class Screen(QWidget):
 
     def make_macros(self, l):
         l.addWidget(label('Alle gcode_macro-Einträge aus Klipper werden automatisch erkannt. Ausblenden löscht kein Makro.', 'caption'))
+        root = l
+        l = self.layout_block('macros_order', root, 'commands', 'Run macros')
         f, c = card('Makros ausführen')
         self.macro_buttons = QGridLayout()
         self.macro_buttons.setSpacing(7)
         c.addLayout(self.macro_buttons)
         l.addWidget(f)
+        l = self.layout_block('macros_order', root, 'visibility', 'Macro visibility')
         f, c = card('Sichtbarkeit · alle Makros')
         c.addLayout(row(
             button('Hide All', partial(self.set_all_macros_visible, False)),
@@ -2827,6 +3106,12 @@ class Screen(QWidget):
              'and PolicyKit permissions for the VeloxScreen user. No root access is granted by VeloxScreen.')
 
     def make_settings(self, l):
+        f, c = card('Customize layout')
+        c.addWidget(button('Edit layout', self.open_layout_editor, True))
+        c.addWidget(label('Reorder blocks, navigation, fans and temperature tiles. Safety controls stay fixed.', 'caption'))
+        l.addWidget(f)
+        root = l
+        l = self.layout_block('settings_order', root, 'jog', 'Manual movement / Jog')
         f, c = card('Manual movement / Jog')
         c.addWidget(label('Reverse the X, Y or Z jog buttons and set their manual move speeds. '
                           'Only affects movement from VeloxScreen, not homing, printing or Klipper motor direction.',
@@ -2854,6 +3139,7 @@ class Screen(QWidget):
         self.jog_settings_status = label('', 'caption')
         c.addWidget(self.jog_settings_status)
         l.addWidget(f)
+        l = self.layout_block('settings_order', root, 'startup', 'Startup screen')
         f, c = card('Startup screen')
         self.show_splash_checkbox = TouchCheckBox(tr('Show startup screen'))
         self.show_splash_checkbox.setChecked(startup_bool('show_splash', True))
@@ -2882,6 +3168,7 @@ class Screen(QWidget):
         self.startup_status = label('', 'caption')
         c.addWidget(self.startup_status)
         l.addWidget(f)
+        l = self.layout_block('settings_order', root, 'appearance', 'Appearance / theme')
         f, c = card('Appearance / theme')
         c.addWidget(label('Choose any RGB color for accents, panels, backgrounds, sidebar and buttons.'))
         self.theme_preview_label = label('')
@@ -2889,6 +3176,7 @@ class Screen(QWidget):
         c.addWidget(button('Edit theme colors', self.edit_theme, True))
         l.addWidget(f)
         self.update_theme_summary()
+        l = self.layout_block('settings_order', root, 'language', 'Language')
         f, c = card('Language / Sprache')
         self.lang_combo = QComboBox()
         self.lang_combo.addItem('English', 'en')
@@ -2898,6 +3186,7 @@ class Screen(QWidget):
         c.addWidget(label('Default: English. Changing the language restarts the UI.'))
         c.addWidget(button('Apply language', self.apply_language, True))
         l.addWidget(f)
+        l = self.layout_block('settings_order', root, 'confirmations', 'Confirmation dialogs')
         f, c = card('Bestätigungsdialoge')
         self.confirm_checkbox = TouchCheckBox(tr('Vor G-Code-Befehlen bestätigen'))
         self.confirm_checkbox.setMinimumHeight(46)
@@ -2912,6 +3201,7 @@ class Screen(QWidget):
         c.addWidget(self.confirm_shutdown_checkbox)
         c.addWidget(label('If disabled, the dashboard shutdown button sends the request without asking. Active and paused prints remain protected.', 'caption'))
         l.addWidget(f)
+        l = self.layout_block('settings_order', root, 'notifications', 'G-Code notifications')
         f, c = card(tr('G-Code notifications'))
         self.notifications_checkbox = TouchCheckBox(tr('Show RESPOND / macro messages'))
         self.notifications_checkbox.setMinimumHeight(41)
@@ -2931,15 +3221,18 @@ class Screen(QWidget):
         c.addLayout(duration_row)
         c.addWidget(button('Test popup', lambda: self.show_notification('IDEX: T1 active (test)', force=True)))
         l.addWidget(f)
+        l = self.layout_block('settings_order', root, 'recovery', 'Klipper / Host Recovery')
         f, c = card('Klipper / Host Recovery')
         c.addWidget(label('Use after an emergency stop, MCU shutdown or Klipper error. '
                           'Each action asks for confirmation. These actions will not resume a print.', 'caption'))
         c.addWidget(button('Open Recovery Controls', self.open_recovery_menu, True))
         l.addWidget(f)
+        l = self.layout_block('settings_order', root, 'service', 'Service Control')
         f, c = card('Service Control')
         c.addWidget(button('VeloxScreen neu starten', self.restart_screen, True))
         c.addWidget(label('Neustart direkt auf dem Touchdisplay. Alternativ über Mainsail → Service Control → veloxscreen (nach einmaliger Einrichtung).', 'caption'))
         l.addWidget(f)
+        l = self.layout_block('settings_order', root, 'configuration', 'Configuration')
         f, c = card('Konfiguration')
         c.addWidget(label(str(CFG_PATH), 'caption'))
         c.addWidget(label('Makros ein-/ausblenden unter Makros. Die Einstellungen werden in veloxscreen.conf gespeichert.', 'caption'))
@@ -3067,7 +3360,7 @@ class Screen(QWidget):
         if not hasattr(self, 'macro_buttons'):
             return
         self._clear_layout(self.macro_buttons)
-        names = sorted(self.macro_commands, key=str.casefold)
+        names = ordered_items(sorted(self.macro_commands, key=str.casefold), read_layout_order('macro_order'))
         shown = 0
         for name in names:
             if self.macro_is_visible(name):
@@ -3276,7 +3569,7 @@ class Screen(QWidget):
             chosen.append(chambers[0])
         if len(chosen) < 4:
             chosen.extend(n for n in all_names if n.startswith('heater_generic ') and n not in chosen)
-        chosen = chosen[:4]
+        chosen = ordered_items(chosen[:4], read_layout_order('temperature_order'))
         signature = tuple(chosen)
         if signature != self._dash_temp_signature:
             self._dash_temp_signature = signature
@@ -3457,7 +3750,8 @@ class Screen(QWidget):
         sensors = sorted({n for n in self.all_objects
                           if n.startswith(('temperature_sensor ', 'temperature_fan '))
                           and any(word in n.lower() for word in ('chamber', 'kammer'))})
-        signature = (tuple(heaters), tuple(sensors))
+        names = ordered_items(heaters + sensors, read_layout_order('temperature_order'))
+        signature = (tuple(names), tuple(heaters), tuple(sensors))
         if signature != self._print_temp_signature:
             self._print_temp_signature = signature
             self.print_temp_widgets = {}
@@ -3466,7 +3760,7 @@ class Screen(QWidget):
                 if item.widget():
                     item.widget().deleteLater()
             cols = 1 if self.compact else 2
-            for i, name in enumerate(heaters + sensors):
+            for i, name in enumerate(names):
                 title = ('T0 · Hotend' if name == 'extruder' else
                          'T' + name[8:] + ' · Hotend' if re.fullmatch(r'extruder\d+', name) else
                          'Heizbett' if name == 'heater_bed' else name.split(' ', 1)[-1])
@@ -3515,14 +3809,15 @@ class Screen(QWidget):
         heaters = [x for x in self.all_objects if x == 'extruder' or re.fullmatch(r'extruder\d+',x)
                    or x == 'heater_bed' or x.startswith('heater_generic ')]
         sensors = [x for x in self.all_objects if x.startswith(('temperature_sensor ','temperature_fan '))]
-        signature = (tuple(heaters),tuple(sensors))
+        names = ordered_items(heaters + sensors, read_layout_order('temperature_order'))
+        signature = (tuple(names), tuple(heaters), tuple(sensors))
         if signature != self._last_temp_signature:
             self._last_temp_signature=signature
             self.temp_widgets={}
             while self.temperature_grid.count():
                 item=self.temperature_grid.takeAt(0)
                 if item.widget(): item.widget().deleteLater()
-            for i,name in enumerate(heaters+sensors):
+            for i,name in enumerate(names):
                 is_heater=name in heaters
                 f,c=card()
                 pretty=name.replace('temperature_sensor ','').replace('heater_generic ','').replace('temperature_fan ','')
@@ -3572,8 +3867,7 @@ class Screen(QWidget):
     def update_fans(self, st):
         fans = [x for x in self.all_objects if x == 'fan' or x.startswith(
             ('fan_generic ', 'heater_fan ', 'temperature_fan '))]
-        desired = [x.strip() for x in conf('layout', 'fan_order').split(',') if x.strip()]
-        fans.sort(key=lambda f: (0, desired.index(f)) if f in desired else (1, f))
+        fans = ordered_items(sorted(fans), read_layout_order('fan_order'))
         signature = tuple(fans)
         if signature != self._last_fan_signature:
             self._last_fan_signature = signature

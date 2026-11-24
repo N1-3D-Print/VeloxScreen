@@ -1,3 +1,19 @@
+## v0.3.17-alpha — Custom layout editor
+
+- Reorder Dashboard, Print, Control, Tools, Temperatures, Macros and Settings blocks and the navigation menu.
+- Shared ordering of fans, temperature tiles, macro buttons and presets; preserve existing `fan_order` and append newly discovered objects.
+- One-finger scrolling in normal edit mode; optional drag mode and Up/Down buttons. Save or cancel, and reset per category.
+- Keep emergency stop, print status, recovery shortcut, host shutdown and fault banner pinned; no printer commands are issued by layout changes.
+- Persist ordering in `[layout]`; apply to existing UI without a service restart. Dynamic lists update on the next status poll.
+- Native Qt drag/touch testing pending.
+
+## v0.3.16-alpha — Manual fans only on Print
+
+- Show only `fan` and `fan_generic` on the Print page, including auxiliary and tool-specific generic fans.
+- Hide `temperature_fan`, `heater_fan`, `controller_fan` and all other automatic fan types from Print.
+- Preserve existing fan order, speed controls and the general Control page.
+- No configuration migration required.
+
 ## v0.3.15-alpha — Dashboard host shutdown
 
 - Compact Shutdown Host button at the top of Dashboard, using Moonraker `POST /machine/shutdown`.

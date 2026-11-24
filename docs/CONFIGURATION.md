@@ -20,7 +20,7 @@ The app also supports a legacy `veloxscreen.conf` next to `main.py` as a fallbac
 | `[tools]` | Optional manual T-to-extruder mapping |
 | `[temperature_presets]` | Any number of hotend/bed/chamber presets |
 | `[macros]` | Optional quick macro commands |
-| `[layout]` | Fan ordering, optional custom chamber-heater mapping |
+| `[layout]` | Custom block, navigation and item ordering; optional custom chamber-heater mapping |
 | `[behavior]` | Confirmation prompts before G-Code commands |
 | `[macro_visibility]` | Show all/selected macros; allowlist/denylist |
 | `[led_effects]` | Optional LED effect fade duration |
@@ -114,3 +114,17 @@ speed_z = 10
 ```
 
 Speeds are mm/s; X/Y accept 1–500 and Z 0.1–50. Jog commands convert to mm/min for G-code. These settings do **not** change homing or motor directions in Klipper.
+
+
+## Custom layout
+
+Use **Settings → Customize layout → Edit layout**. Select the category and change its order with Up/Down or optional drag mode. Save applies the order immediately (live object lists refresh on the next Moonraker poll); Cancel discards changes. Reset order resets only the selected category after saving.
+
+```ini
+[layout]
+fan_order = fan_generic part_t1, fan, fan_generic aux
+print_order = ["temperatures", "fans", "motion", "overrides"]
+temperature_order = ["heater_bed", "extruder", "extruder1"]
+```
+
+Additional keys: `nav_order`, `dashboard_order`, `control_order`, `tools_order`, `temperatures_order`, `macros_order`, `settings_order`, `macro_order`, `preset_order`. The editor writes JSON arrays except `fan_order`, which remains comma-separated for compatibility. Empty values use default order. Unknown IDs are ignored for display; new objects are appended. Fan and temperature order is shared by the relevant pages; the Dashboard still shows its selected subset of temperature tiles, and Print excludes automatic fans. Safety and fault controls cannot be moved. No Klipper configuration or hardware settings are changed.
