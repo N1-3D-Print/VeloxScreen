@@ -72,7 +72,7 @@ confirm_shutdown = true
 
 Set `confirm_commands` to `false` to remove the normal G-Code prompt. **This does not bypass Klipper safety checks.**
 
-`confirm_shutdown` independently controls the Dashboard **Shutdown Host** confirmation (default: `true`), also accessible under Settings → Confirmation dialogs. The button only becomes available when a live idle state is confirmed; the state is checked again immediately before the request. Active/paused prints and unknown state remain blocked even with confirmation disabled. Let the hotends cool before shutting down. Moonraker must have permission to shut down its host OS. This does not switch off a separate printer power supply or change M112/recovery confirmations.
+`confirm_shutdown` independently controls the Settings → Service Control **Shutdown Host** confirmation (default: `true`), also accessible under Settings → Confirmation dialogs. The button only becomes available when a live idle state is confirmed; the state is checked again immediately before the request. Active/paused prints and unknown state remain blocked even with confirmation disabled. Let the hotends cool before shutting down. Moonraker must have permission to shut down its host OS. This does not switch off a separate printer power supply or change M112/recovery confirmations.
 
 ## Speed and flow overrides
 
@@ -140,3 +140,9 @@ See [QUALITY_OF_LIFE.md](QUALITY_OF_LIFE.md) for the new `[display]`, `[quick_ac
 ## Live Z calibration (v0.4.1)
 
 No change required for supported standard probes or mechanical endstops. For a single standard `[probe_eddy_current ...]` setup, set `[babystep] eddy_method = scan` or `tap` only after verifying the correct method and command support for your firmware. The default is empty, which blocks permanent Eddy saves. See [Z offset saving](Z_OFFSET.md).
+
+## Pointer style (v0.4.2)
+
+`[display] cursor_style = dot` (default) uses a small white dot with a dark outline inside VeloxScreen, including Qt dialogs. `hidden` hides the cursor; `system` restores the normal OS pointer. Select the style in Settings → Display comfort, save, then restart VeloxScreen. The operating-system cursor theme is not changed.
+
+Dashboard and Print both provide a fixed emergency stop. Host shutdown moved to Settings → Service Control and retains its separate confirmation and idle checks.

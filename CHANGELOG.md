@@ -1,3 +1,10 @@
+## v0.4.2-alpha — Design cleanup and dashboard emergency stop
+
+- Separate structural Qt widgets, labels, cards and intentional readout backgrounds. Consistent theme-derived values, numeric inputs, section titles, selection, disabled buttons and progress bar styling; retain live heating and fault colors.
+- Fixed Dashboard emergency stop replaces the Dashboard host shutdown. Dashboard and Print share the same confirmed direct Moonraker emergency endpoint. Host shutdown moves to Settings → Service Control, retaining its independent confirmation and idle-state checks.
+- Small white dot cursor with dark outline throughout VeloxScreen, including Qt dialogs; optional hidden or system pointer in Display comfort. No system-wide cursor changes.
+- Retain v0.4.1 functionality and existing config keys; no migration required. Native Qt and hardware checks still required.
+
 ## v0.4.1-alpha — Live Z and calibration save
 
 - Select live Z increments of 0.005, 0.010, 0.025 or 0.050 mm. Show the live G-code Z offset and use Z−/Z+ during active printing with homed Z.

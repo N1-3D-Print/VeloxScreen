@@ -63,7 +63,7 @@ ABS = nozzle:250, bed:100
 [behavior]
 # Turning this off sends commands without an extra confirmation dialog.
 confirm_commands = true
-# Separate confirmation for the dashboard host shutdown button.
+# Separate confirmation for the Settings host shutdown button.
 confirm_shutdown = true
 
 [macro_visibility]
@@ -119,6 +119,8 @@ hardware_idle = false
 font_scale = 1
 button_scale = 1
 start_page = Dashboard
+# dot (default), hidden, system. Restart VeloxScreen to apply.
+cursor_style = dot
 
 [quick_actions]
 enabled = true

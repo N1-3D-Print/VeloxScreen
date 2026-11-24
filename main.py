@@ -22,7 +22,7 @@ from pathlib import Path
 from functools import partial
 
 from PyQt5.QtCore import Qt, QTimer, QObject, pyqtSignal, QRect, QRectF, QEvent, QEasingCurve, QPropertyAnimation
-from PyQt5.QtGui import QFont, QPainter, QColor, QPen, QPixmap, QLinearGradient, QBrush
+from PyQt5.QtGui import QFont, QPainter, QColor, QPen, QPixmap, QLinearGradient, QBrush, QCursor
 from PyQt5.QtWidgets import (
     QApplication, QWidget, QLabel, QPushButton, QVBoxLayout, QHBoxLayout,
     QScrollArea, QFrame, QGridLayout, QStackedWidget, QComboBox, QDoubleSpinBox, QCheckBox,
@@ -888,13 +888,19 @@ _ADDED_EN_DE = {
      'Flussfaktor gilt global für den G-Code, auch bei Toolwechseln.'),
     ('Confirm host shutdown', 'Herunterfahren bestätigen'),
     ('Shutdown Host', 'Host herunterfahren'),
+    ('EMERGENCY STOP', 'NOT-AUS'),
+    ('Immediately stops Klipper. Requires firmware restart/recovery.', 'Stoppt Klipper sofort. Firmware-Neustart/Wiederherstellung erforderlich.'),
+    ('Pointer style (restart UI)', 'Mauszeiger (UI-Neustart)'),
+    ('Small dot', 'Kleiner Punkt'),
+    ('Hidden pointer', 'Zeiger ausgeblendet'),
+    ('System pointer', 'System-Mauszeiger'),
     ('Shutdown blocked: printer is not confirmed idle.', 'Herunterfahren gesperrt: Drucker nicht nachweislich im Leerlauf.'),
     ('The host will shut down. Let the hotends cool first. Mainsail and SSH will disconnect. Continue?',
      'Der Host wird heruntergefahren. Hotends vorher abkühlen lassen. Mainsail und SSH werden getrennt. Fortfahren?'),
     ('Shutdown is allowed only when the printer is confirmed idle. Let the hotends cool first.',
      'Herunterfahren nur bei bestätigtem Leerlauf. Hotends vorher abkühlen lassen.'),
-    ('If disabled, the dashboard shutdown button sends the request without asking. Active and paused prints remain protected.',
-     'Wenn deaktiviert, fährt der Dashboard-Button ohne Rückfrage herunter. Aktive und pausierte Drucke bleiben geschützt.'),
+    ('If disabled, the Settings shutdown button sends the request without asking. Active and paused prints remain protected.',
+     'Wenn deaktiviert, fährt der Button in den Einstellungen ohne Rückfrage herunter. Aktive und pausierte Drucke bleiben geschützt.'),
     ('Host shutdown requested.', 'Herunterfahren des Hosts angefordert.'),
     ('Requesting host shutdown...', 'Herunterfahren wird angefordert ...'),
     ('Cannot verify printer status:', 'Druckerstatus kann nicht geprüft werden:'),
@@ -943,7 +949,14 @@ def inform(parent, title, message):
     return QMessageBox.information(parent, tr(title), tr(message))
 
 STYLE = '''
-QWidget { background: #0c1119; color: #e8edf6; font-family: 'DejaVu Sans'; }
+QWidget { color: #e8edf6; font-family: 'DejaVu Sans'; }
+QWidget#veloxRoot, QWidget#veloxPage, QWidget#veloxQuickPanel, QWidget#veloxScrollViewport, QDialog { background: #0c1119; }
+QLabel { background: transparent; }
+QLabel#sectionTitle { font-size: 13px; font-weight: 700; }
+QLabel#readout { font-size: 13px; font-weight: 600; }
+QLabel#etaValue { font-size: 30px; font-weight: 750; }
+QLabel#etaValueSmall { font-size: 23px; font-weight: 750; }
+QLabel#metricSmall { font-size: 15px; font-weight: 750; }
 QLabel#title { font-size: 18px; font-weight: 750; }
 QLabel#brand { font-size: 20px; font-weight: 800; color: #f2f7ff; }
 QLabel#tempValue { font-size: 17px; font-weight: 700; color: #ffffff; }
@@ -951,7 +964,7 @@ QLabel#tempName { color: #b6cbe3; font-size: 12px; font-weight: 600; }
 QLabel#subtitle { font-size: 9px; font-weight: 500; color: #8fa1b9; }
 QLabel#metric { font-size: 23px; font-weight: 750; color: #fbfcff; }
 QLabel#caption { color: #9eadc2; font-size: 11px; }
-QFrame#card { background: #171f2d; border: 1px solid #263247; border-radius: 9px; }
+QFrame#card { background: #171f2d; border: 1px solid #263247; border-radius: 10px; }
 QPushButton { background: #26364e; border: 1px solid #354966; border-radius: 8px; padding: 6px 9px; font-weight: 600; font-size: 12px; }
 QPushButton:hover { background: #344b6e; }
 QPushButton:pressed { background: #5179ad; }
@@ -962,7 +975,15 @@ QPushButton#danger { background: #8f2029; color: #ffffff; border: 2px solid #dd4
 QPushButton#danger:pressed { background: #ad2433; }
 QPushButton#nav:checked { background: #244c79; border-left: 4px solid #75c3ff; }
 QComboBox, QDoubleSpinBox, QLineEdit, QPlainTextEdit { background: #111a27; border: 1px solid #3a4c67; border-radius: 7px; padding: 7px; }
-QScrollArea { border: 0; }
+QScrollArea { border: 0; background: transparent; }
+QProgressBar { border: 0; border-radius: 4px; background: #111a27; }
+QProgressBar::chunk { background: #2866bd; border-radius: 4px; }
+QAbstractItemView { background: #111a27; border: 1px solid #3a4c67; border-radius: 5px; }
+QAbstractItemView::item { padding: 4px; }
+QComboBox::drop-down { border: 0; width: 22px; }
+QDoubleSpinBox QLineEdit { border: 0; padding: 0; background: transparent; }
+QScrollBar:horizontal { background: #152031; height: 7px; }
+QScrollBar::handle:horizontal { background: #50627d; border-radius: 3px; }
 QScrollBar:vertical { background: #152031; width: 7px; }
 QScrollBar::handle:vertical { background: #50627d; border-radius: 3px; }
 '''
@@ -1060,7 +1081,7 @@ def themed_style(theme):
     style = re.sub(r'#[0-9a-fA-F]{6}',
                    lambda m: replacements.get(m.group().lower(), m.group()),
                    STYLE_BASE)
-    style += f"\nQFrame#veloxSidebar {{ background: {side}; }}"
+    style += f"\nQFrame#veloxSidebar, QWidget#veloxNavPanel, QFrame#veloxSidebar QWidget#veloxScrollViewport {{ background: {side}; }}"
     style += f"\nQFrame#card QLabel {{ color: {panel_ink}; }}"
     style += f"\nQFrame#card QLabel#caption {{ color: {rgb_mix(panel_ink, panel, 0.32)}; }}"
     style += f"\nQFrame#card QLabel#tempName {{ color: {rgb_mix(panel_ink, panel, 0.22)}; }}"
@@ -1070,7 +1091,24 @@ def themed_style(theme):
     style += f"\nQPushButton#primary {{ color: {accent_ink}; }}"
     style += f"\nQPushButton#nav {{ color: {side_ink}; background: {rgb_mix(side, bg, 0.22)}; }}"
     style += f"\nQPushButton#nav:checked {{ color: {text_on(rgb_mix(side, accent, 0.58))}; }}"
-    style += f"\nQComboBox, QDoubleSpinBox, QLineEdit, QPlainTextEdit {{ color: {bg_ink}; }}"
+    # A single intentional readout surface. Ordinary labels never paint a dark rectangle.
+    # Derive it from the active theme instead of baking a second unrelated palette.
+    field = rgb_mix(panel, bg, 0.65)
+    if field == panel:
+        field = rgb_mix(panel, '#000000' if text_on(panel) == '#17202d' else '#ffffff', 0.08)
+    field_ink = text_on(field)
+    edge = rgb_mix(field, field_ink, 0.17)
+    for name in ('metric', 'metricSmall', 'tempValue', 'readout', 'etaValue', 'etaValueSmall'):
+        selector = f'QLabel#{name}, QFrame#card QLabel#{name}'
+        style += f'\n{selector} {{ background: {field}; color: {field_ink}; border: 1px solid {edge}; border-radius: 6px; padding: 3px 6px; }}'
+    style += f'\nQFrame#card QLabel#etaValue, QLabel#etaValue, QFrame#card QLabel#etaValueSmall, QLabel#etaValueSmall {{ color: {rgb_mix(field_ink, accent, 0.27)}; }}'
+    style += f'\nQComboBox, QDoubleSpinBox, QLineEdit, QPlainTextEdit, QAbstractItemView {{ background: {field}; color: {field_ink}; border-color: {edge}; }}'
+    style += f'\nQDoubleSpinBox QLineEdit {{ background: transparent; border: 0; padding: 0; color: {field_ink}; }}'
+    style += f'\nQAbstractItemView::item:selected {{ background: {accent}; color: {accent_ink}; }}'
+    style += f'\nQPushButton:disabled, QPushButton#primary:disabled {{ color: {rgb_mix(btn_ink, btn, 0.45)}; background: {rgb_mix(btn, bg, 0.50)}; border-color: {edge}; }}'
+    # Emergency stop must always stay red/white regardless of custom theme.
+    style += '\nQPushButton#danger { background: #8f2029; color: #ffffff; border: 2px solid #dd4554; }'
+    style += '\nQPushButton#danger:hover { background: #a42a35; } QPushButton#danger:pressed { background: #b33340; }'
     return style
 
 
@@ -1140,6 +1178,30 @@ def touch_dialog_style(source):
     return scaled_style(source, scale * bounded_number(conf('display', 'font_scale', '1'), 1, .8, 1.5))
 
 
+def pointer_mode(value):
+    value = str(value).strip().lower()
+    return value if value in ('dot', 'hidden', 'system') else 'dot'
+
+
+def install_pointer(app, mode):
+    """Application-only cursor; no X11 cursor theme or desktop changes."""
+    mode = pointer_mode(mode)
+    if mode == 'system':
+        return
+    if mode == 'hidden':
+        app.setOverrideCursor(QCursor(Qt.BlankCursor))
+        return
+    pix = QPixmap(13, 13)
+    pix.fill(Qt.transparent)
+    painter = QPainter(pix)
+    painter.setRenderHint(QPainter.Antialiasing)
+    painter.setPen(QPen(QColor('#10141b'), 1.5))
+    painter.setBrush(QColor('#f5f7fa'))
+    painter.drawEllipse(QRectF(3, 3, 7, 7))
+    painter.end()
+    app.setOverrideCursor(QCursor(pix, 6, 6))
+
+
 def label(text, name=None):
     l = QLabel(tr(text))
     if name:
@@ -1161,10 +1223,10 @@ def card(title=None):
     frame = QFrame()
     frame.setObjectName('card')
     lay = QVBoxLayout(frame)
-    lay.setContentsMargins(10, 8, 10, 8)
-    lay.setSpacing(6)
+    lay.setContentsMargins(9, 7, 9, 7)
+    lay.setSpacing(5)
     if title:
-        lay.addWidget(label(title))
+        lay.addWidget(label(title, 'sectionTitle'))
     return frame, lay
 
 
@@ -1193,6 +1255,8 @@ class FingerScrollArea(QScrollArea):
         self.setFrameShape(QFrame.NoFrame)
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.viewport().setObjectName('veloxScrollViewport')
+        self.viewport().setAttribute(Qt.WA_StyledBackground, True)
         self.viewport().setAttribute(Qt.WA_AcceptTouchEvents, True)
         QScroller.grabGesture(self.viewport(), QScroller.LeftMouseButtonGesture)
         scroller = QScroller.scroller(self.viewport())
@@ -2294,6 +2358,8 @@ class Screen(QWidget):
     def __init__(self):
         super().__init__()
         self.setWindowTitle('VeloxScreen')
+        self.setObjectName('veloxRoot')
+        self.setAttribute(Qt.WA_StyledBackground, True)
         self.theme = dict(THEME)
         screen = QApplication.primaryScreen()
         available = screen.availableGeometry() if screen is not None else None
@@ -2455,6 +2521,7 @@ class Screen(QWidget):
         # while preserving short taps on the navigation buttons.
         nav_scroll = FingerScrollArea()
         nav_panel = QWidget()
+        nav_panel.setObjectName('veloxNavPanel')
         nav_layout = QVBoxLayout(nav_panel)
         nav_layout.setContentsMargins(0, 0, 1, 0)
         nav_layout.setSpacing(3)
@@ -2487,7 +2554,7 @@ class Screen(QWidget):
             self.pages[name] = self._page(name, builder)
             self.stack.addWidget(self.pages[name])
         nav_layout.addStretch()
-        sl.addWidget(label('v0.4.1 alpha', 'caption'))
+        sl.addWidget(label('v0.4.2 alpha', 'caption'))
         # IMPORTANT: Qt otherwise deletes self.connection and all nav buttons.
         outer.addWidget(sidebar)
         sidebar.setVisible(not self.compact)
@@ -2509,12 +2576,21 @@ class Screen(QWidget):
         self.quick_bar.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.quick_bar.setFixedHeight(round((38 if self.tiny else 52) * max(1.0, bounded_number(conf('display', 'button_scale', '1'), 1, .8, 1.5))))
         self.quick_panel = QWidget()
+        self.quick_panel.setObjectName('veloxQuickPanel')
         self.quick_layout = QHBoxLayout(self.quick_panel)
         self.quick_layout.setContentsMargins(4, 2, 4, 2)
         self.quick_layout.setSpacing(4)
         self.quick_bar.setWidget(self.quick_panel)
         self.quick_bar.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
         content_layout.addWidget(self.quick_bar)
+        self.dashboard_header = QWidget()
+        dashboard_header_layout = QHBoxLayout(self.dashboard_header)
+        dashboard_header_layout.setContentsMargins(9, 5, 9, 3)
+        dashboard_header_layout.setSpacing(6)
+        dashboard_header_layout.addWidget(label('Dashboard', 'title'), 1)
+        self.dashboard_stop_button = self.make_emergency_button(compact=True)
+        dashboard_header_layout.addWidget(self.dashboard_stop_button)
+        content_layout.addWidget(self.dashboard_header)
         content_layout.addWidget(self.stack, 1)
         content_layout.addWidget(self.print_stop_button)
         outer.addWidget(content_side, 1)
@@ -2620,10 +2696,12 @@ class Screen(QWidget):
     def _page(self, name, builder):
         scroll = FingerScrollArea()
         container = QWidget()
+        container.setObjectName('veloxPage')
         content = QVBoxLayout(container)
         content.setContentsMargins(9, 7, 9, 9)
         content.setSpacing(7)
-        content.addWidget(label(name, 'title'))
+        if name != 'Dashboard':
+            content.addWidget(label(name, 'title'))
         builder(content)
         content.addStretch()
         scroll.setWidget(container)
@@ -2632,6 +2710,7 @@ class Screen(QWidget):
     def navigate(self, name):
         self.stack.setCurrentWidget(self.pages[name])
         self.print_stop_button.setVisible(name == 'Print')
+        self.dashboard_header.setVisible(name == 'Dashboard')
         if self.compact_nav is not None:
             names = self.nav_order
             self.compact_nav.blockSignals(True)
@@ -2935,10 +3014,8 @@ class Screen(QWidget):
         self.print_status_label.setWordWrap(True)
         c.addWidget(self.print_status_label)
         self.print_status_label.setTextFormat(Qt.PlainText)
-        self.print_progress_label = label('-- %', 'metric')
+        self.print_progress_label = label('-- %', 'metricSmall' if self.tiny else 'metric')
         self.print_progress_label.setAlignment(Qt.AlignCenter)
-        if self.tiny:
-            self.print_progress_label.setStyleSheet('font-size: 15px; font-weight: bold;')
         c.addWidget(self.print_progress_label)
         self.print_progress_bar = QProgressBar()
         self.print_progress_bar.setRange(0, 1000)
@@ -2946,8 +3023,8 @@ class Screen(QWidget):
         self.print_progress_bar.setFixedHeight(9)
         c.addWidget(self.print_progress_bar)
         times = QHBoxLayout()
-        self.remaining_label = label('—')
-        self.eta_label = label('—')
+        self.remaining_label = label('—', 'etaValueSmall' if self.tiny else 'etaValue')
+        self.eta_label = label('—', 'etaValueSmall' if self.tiny else 'etaValue')
         for title, widget in (('TIME REMAINING', self.remaining_label), ('FINISH AT · EST.', self.eta_label)):
             panel, box = card()
             if self.tiny:
@@ -2957,7 +3034,6 @@ class Screen(QWidget):
             caption.setAlignment(Qt.AlignCenter)
             box.addWidget(caption)
             widget.setAlignment(Qt.AlignCenter)
-            widget.setStyleSheet(f'font-size: {round((23 if self.tiny else 30)*self.ui_scale*bounded_number(conf("display", "font_scale", "1"), 1, .8, 1.5))}px; font-weight: bold; color: #75c3ff;')
             box.addWidget(widget)
             times.addWidget(panel)
         c.addLayout(times)
@@ -2966,13 +3042,7 @@ class Screen(QWidget):
         l.addWidget(f)
 
         # Pinned outside the print scroller; remains reachable while scrolling.
-        stop = QPushButton('EMERGENCY STOP  ·  M112')
-        stop.setObjectName('danger')
-        stop.setMinimumHeight(44 if not self.tiny else 30)
-        if self.tiny:
-            stop.setStyleSheet('QPushButton { font-size: 12px; padding: 3px; min-height: 24px; }')
-        stop.setToolTip('Immediately stops Klipper. Requires firmware restart/recovery.')
-        stop.clicked.connect(self.request_emergency_stop)
+        stop = self.make_emergency_button()
         self.print_stop_button = stop
         stop.hide()
         actions = QHBoxLayout()
@@ -2996,7 +3066,7 @@ class Screen(QWidget):
         self.print_thumb.setMaximumHeight(120 if self.tiny else 160)
         self.print_thumb.setTextFormat(Qt.PlainText)
         c.addWidget(self.print_thumb)
-        self.print_details = label('Layer — · Filament — · Active tool —')
+        self.print_details = label('Layer — · Filament — · Active tool —', 'readout')
         self.print_details.setTextFormat(Qt.PlainText)
         c.addWidget(self.print_details)
         l.addWidget(f)
@@ -3077,6 +3147,16 @@ class Screen(QWidget):
         self.temp_history = TemperatureHistory()
         c.addWidget(self.temp_history)
         l.addWidget(f)
+
+    def make_emergency_button(self, compact=False):
+        stop = QPushButton(tr('EMERGENCY STOP' if compact else 'EMERGENCY STOP  ·  M112'))
+        stop.setObjectName('danger')
+        stop.setMinimumHeight(36 if self.tiny else 44)
+        if compact or self.tiny:
+            stop.setStyleSheet('QPushButton#danger { font-size: 12px; padding: 4px 7px; min-height: 28px; }')
+        stop.setToolTip(tr('Immediately stops Klipper. Requires firmware restart/recovery.'))
+        stop.clicked.connect(self.request_emergency_stop)
+        return stop
 
     def request_emergency_stop(self):
         """Always confirm, even when normal macro confirmations are disabled."""
@@ -3216,7 +3296,7 @@ class Screen(QWidget):
                     item.widget().deleteLater()
             for name in fans:
                 frame, content = card(name)
-                info = label('-- %', 'caption')
+                info = label('-- %', 'readout')
                 content.addWidget(info)
                 slider = None
                 if name == 'fan' or name.startswith('fan_generic '):
@@ -3270,20 +3350,6 @@ class Screen(QWidget):
         self.network.script(command)
 
     def make_dashboard(self, l):
-        # Compact power action, separate from emergency stop and motor controls.
-        power_row = QHBoxLayout()
-        power_row.addStretch()
-        self.shutdown_button = button('Shutdown Host', self.request_host_shutdown)
-        self.shutdown_button.setMinimumHeight(32 if self.tiny else 38)
-        self.shutdown_button.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
-        self.shutdown_button.setToolTip(tr('Shutdown is allowed only when the printer is confirmed idle. Let the hotends cool first.'))
-        self.shutdown_button.setEnabled(False)
-        power_row.addWidget(self.shutdown_button)
-        l.addLayout(power_row)
-        self.shutdown_status = label('', 'caption')
-        self.shutdown_status.setTextFormat(Qt.PlainText)
-        self.shutdown_status.hide()
-        l.addWidget(self.shutdown_status)
         root = l
         l = self.layout_block('dashboard_order', root, 'motion', 'Live motion')
         grid = QGridLayout()
@@ -3447,7 +3513,7 @@ class Screen(QWidget):
                                               ('Z+', 'Z', 1, 3, 0), ('Z-', 'Z', -1, 3, 2)]:
             grid.addWidget(button(text, partial(self.jog, axis, direction)), yy, xx)
         c.addLayout(grid)
-        self.s['position'] = label('Position X/Y/Z: --')
+        self.s['position'] = label('Position X/Y/Z: --', 'readout')
         c.addWidget(self.s['position'])
         motor_row = QHBoxLayout()
         motor_row.addWidget(label('Disables all stepper motors. Rehome axes before moving again.', 'caption'), 1)
@@ -4221,6 +4287,12 @@ class Screen(QWidget):
             self.start_page_combo.addItem(tr(name), name)
         self.start_page_combo.setCurrentIndex(max(0, self.start_page_combo.findData(conf('display', 'start_page', 'Dashboard'))))
         c.addWidget(self.start_page_combo)
+        c.addWidget(label('Pointer style (restart UI)'))
+        self.pointer_combo = QComboBox()
+        for title, mode in (('Small dot', 'dot'), ('Hidden pointer', 'hidden'), ('System pointer', 'system')):
+            self.pointer_combo.addItem(tr(title), mode)
+        self.pointer_combo.setCurrentIndex(max(0, self.pointer_combo.findData(pointer_mode(conf('display', 'cursor_style', 'dot')))))
+        c.addWidget(self.pointer_combo)
         if self._brightness_path is not None:
             c.addWidget(label('Hardware brightness (%)'))
             self.brightness_spin = TouchSpinBox()
@@ -4276,6 +4348,7 @@ class Screen(QWidget):
             set_config('display', 'keep_on_print', str(self.keep_display_checkbox.isChecked()).lower())
             set_config('display', 'hardware_idle', str(self.hardware_idle_checkbox.isChecked()).lower())
             set_config('display', 'start_page', self.start_page_combo.currentData())
+            set_config('display', 'cursor_style', self.pointer_combo.currentData())
             set_config('print_view', 'filament_density', f'{self.filament_density_spin.value():g}')
             if self.brightness_spin is not None:
                 brightness = int(self.brightness_spin.value())
@@ -4284,7 +4357,7 @@ class Screen(QWidget):
                 else:
                     warn(self, 'Brightness', 'Could not set hardware brightness.')
             self.wake_screen()
-            self.comfort_status.setText('Saved. Restart VeloxScreen to apply font and button sizing.')
+            self.comfort_status.setText('Saved. Restart VeloxScreen to apply font, button and pointer settings.')
         except OSError as exc:
             warn(self, 'Display comfort', str(exc))
 
@@ -4610,7 +4683,7 @@ class Screen(QWidget):
         self.confirm_shutdown_checkbox.setChecked(self.confirm_shutdown)
         self.confirm_shutdown_checkbox.toggled.connect(self.change_shutdown_confirmation)
         c.addWidget(self.confirm_shutdown_checkbox)
-        c.addWidget(label('If disabled, the dashboard shutdown button sends the request without asking. Active and paused prints remain protected.', 'caption'))
+        c.addWidget(label('If disabled, the Settings shutdown button sends the request without asking. Active and paused prints remain protected.', 'caption'))
         l.addWidget(f)
         l = self.layout_block('settings_order', root, 'notifications', 'G-Code notifications')
         f, c = card(tr('G-Code notifications'))
@@ -4641,6 +4714,14 @@ class Screen(QWidget):
         l = self.layout_block('settings_order', root, 'service', 'Service Control')
         f, c = card('Service Control')
         c.addWidget(button('VeloxScreen neu starten', self.restart_screen, True))
+        self.shutdown_button = button('Shutdown Host', self.request_host_shutdown)
+        self.shutdown_button.setToolTip(tr('Shutdown is allowed only when the printer is confirmed idle. Let the hotends cool first.'))
+        self.shutdown_button.setEnabled(False)
+        c.addWidget(self.shutdown_button)
+        self.shutdown_status = label('', 'caption')
+        self.shutdown_status.setTextFormat(Qt.PlainText)
+        self.shutdown_status.hide()
+        c.addWidget(self.shutdown_status)
         c.addWidget(label('Neustart direkt auf dem Touchdisplay. Alternativ über Mainsail → Service Control → veloxscreen (nach einmaliger Einrichtung).', 'caption'))
         l.addWidget(f)
         l = self.layout_block('settings_order', root, 'configuration', 'Configuration')
@@ -5269,8 +5350,7 @@ class Screen(QWidget):
                 if name=='heater_bed': pretty='Heizbett'
                 if name=='extruder': pretty='T0 · Hotend'
                 if re.fullmatch(r'extruder\d+',name): pretty='T'+name[len('extruder'):]+' · Hotend'
-                name_label=label(pretty)
-                name_label.setStyleSheet('font-weight: 650; font-size: 12px;')
+                name_label=label(pretty, 'sectionTitle')
                 c.addWidget(name_label)
                 temperature=label('-- °C','metric')
                 temperature.setWordWrap(False)
@@ -5514,6 +5594,7 @@ class Screen(QWidget):
 
 if __name__ == '__main__':
     app = QApplication(sys.argv)
+    install_pointer(app, conf('display', 'cursor_style', 'dot'))
     screen = app.primaryScreen()
     geometry = screen.availableGeometry() if screen is not None else None
     _, _, scale = display_profile(geometry.width() if geometry is not None else 800,

@@ -15,3 +15,5 @@
 | Startup Splash | `09_startup_splash.png` |
 
 These images are for illustrating the UI. Actual device screenshots may differ.
+
+Note: these previews predate the v0.4.2 visual cleanup and may differ from the current interface.
