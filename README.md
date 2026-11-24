@@ -6,7 +6,7 @@
 Responsive layout for small Raspberry Pi touchscreens (experimental 320 × 240 to 1024 × 600). No browser required.
 
 > [!WARNING]
-> **Early Alpha (v0.3.12)** — bugs and incomplete features are expected. Test printer controls carefully. Found an issue? **Please open a GitHub Issue!** Feedback and suggestions are welcome.
+> **Early Alpha (v0.3.13)** — bugs and incomplete features are expected. Test printer controls carefully. Found an issue? **Please open a GitHub Issue!** Feedback and suggestions are welcome.
 
 ## Features
 
@@ -16,7 +16,7 @@ Responsive layout for small Raspberry Pi touchscreens (experimental 320 × 240 t
 - **Jog settings:** invert X/Y/Z movement buttons separately and choose manual speeds in mm/s (saved to `veloxscreen.conf`).
 
 
-- **Print view:** opens automatically when printing starts (optional), with live print progress, actual speed, extrusion flow and acceleration limit, M220/M221 override buttons and fan sliders. An always-confirmed emergency stop uses Moonraker's dedicated emergency endpoint.
+- **Print view:** opens automatically when printing starts (optional), with live print progress, actual speed, extrusion flow and acceleration limit, M220/M221 override buttons, fan sliders and adjustable live heater temperatures. An always-confirmed emergency stop uses Moonraker's dedicated emergency endpoint.
 - **Navigation:** larger, one-finger scrollable sidebar on 800 × 480 and larger displays; compact dropdown navigation on small screens.
 
 - **Network:** Wi-Fi scan, signal, IP address and connection via NetworkManager (experimental, permission-dependent).
@@ -36,6 +36,8 @@ The **Print** page opens automatically on a new `printing` state. You can switch
 [print_view]
 auto_open = true
 ```
+
+**Print temperatures:** view actual and target temperatures for every discovered hotend, bed and generic heater. Tap the target to edit it using the touch keypad. Chamber sensors are read-only; heater editing requires reported limits and live data.
 
 **Emergency Stop:** a red button on the Print page always requires confirmation, regardless of normal command confirmation settings. It calls Moonraker `/printer/emergency_stop` directly, not the normal G-Code queue. It immediately puts Klipper into an emergency shutdown state; recovery will be necessary. Do **not** use it for ordinary pause/cancel actions. Only genuine fans (`fan` and `fan_generic`) have writable controls; temperature- and heater-controlled fans are display-only.
 

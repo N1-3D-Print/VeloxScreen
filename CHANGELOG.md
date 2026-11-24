@@ -1,3 +1,11 @@
+## v0.3.13-alpha — Print temperature controls
+
+- Add live actual and editable target temperatures for every detected hotend, bed and generic heater on Print.
+- Display chamber sensors without writable controls.
+- Use existing heater keypad and configured maximum temperature; disable target buttons when live data or limits are unavailable.
+- Compact single-column layout on small screens. Existing emergency recovery, jog, Wi-Fi and other controls remain unchanged.
+- On-device Qt test pending.
+
 ## v0.3.12-alpha — Emergency-stop recovery controls
 
 - Automatically open a recovery dialog after the M112 emergency-stop request succeeds.

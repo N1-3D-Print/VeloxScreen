@@ -3,6 +3,7 @@
 import configparser
 from collections import deque
 import json
+import math
 import os
 import tempfile
 import re
@@ -509,6 +510,12 @@ _ADDED_EN_DE = {
     ('Tap percentage to enter exact value', 'Prozentwert antippen für genaue Eingabe'),
     ('Flow override is global for the G-Code stream, including tool changes.',
      'Flussfaktor gilt global für den G-Code, auch bei Toolwechseln.'),
+    ('Print temperatures', 'Drucktemperaturen'),
+    ('Waiting for heater data...', 'Warte auf Heizungsdaten ...'),
+    ('No heaters or chamber sensors found.', 'Keine Heizungen oder Kammersensoren gefunden.'),
+    ('Heater temperature limit is unavailable.', 'Temperaturgrenze der Heizung nicht verfügbar.'),
+    ('Sensor only', 'Nur Sensor'),
+    ('Target', 'Soll'),
     ('Waiting for Klipper values', 'Warte auf Klipper-Werte'),
     ('Speed override', 'Geschwindigkeitsfaktor'),
     ('Flow override', 'Flussfaktor'),
@@ -1743,7 +1750,7 @@ class Screen(QWidget):
             self.pages[name] = self._page(name, builder)
             self.stack.addWidget(self.pages[name])
         nav_layout.addStretch()
-        sl.addWidget(label('v0.3.12 alpha', 'caption'))
+        sl.addWidget(label('v0.3.13 alpha', 'caption'))
         # IMPORTANT: Qt otherwise deletes self.connection and all nav buttons.
         outer.addWidget(sidebar)
         sidebar.setVisible(not self.compact)
@@ -2034,6 +2041,17 @@ class Screen(QWidget):
             cols = 1 if self.tiny else 2 if self.compact else 3
             grid.addWidget(f, index // cols, index % cols)
         l.addLayout(grid)
+
+        f, c = card('Print temperatures')
+        self.print_temp_info = label('Waiting for heater data...', 'caption')
+        c.addWidget(self.print_temp_info)
+        self.print_temp_grid = QGridLayout()
+        self.print_temp_grid.setSpacing(5)
+        c.addLayout(self.print_temp_grid)
+        self.print_temp_widgets = {}
+        self._print_temp_signature = None
+        self._print_temp_live = False
+        l.addWidget(f)
 
         l.addWidget(label('Live overrides  ·  M220 / M221', 'caption'))
         self.add_override_controls(l)
@@ -2969,6 +2987,12 @@ class Screen(QWidget):
 
     def error(self, msg):
         self.connection.setText(tr('● Verbindung gestört'))
+        self._print_temp_live = False
+        for reading, target in self.print_temp_widgets.values():
+            reading.setText('-- °C')
+            if target is not None:
+                target.setText(tr('Target') + ' -- °C')
+                target.setEnabled(False)
         self.log('FEHLER: ' + msg)
 
     def response(self, msg):
@@ -3040,6 +3064,7 @@ class Screen(QWidget):
         self.update_dashboard_temperatures(st)
         self.update_discovered_tools(st)
         self.update_temps(st)
+        self.update_print_temperatures(st)
         self.update_fans(st)
         self.update_print_fans(st)
         self.update_led_effects(st)
@@ -3238,6 +3263,71 @@ class Screen(QWidget):
             self.confirm_script('\n'.join(commands), 'Temperatur-Preset '+name)
         else:
             inform(self, 'Preset', 'Keine passenden regelbaren Heizungen für dieses Preset gefunden.')
+
+    def update_print_temperatures(self, st):
+        """Show all controllable heaters and chamber sensors on the Print page."""
+        heaters = sorted({n for n in self.all_objects if n == 'extruder' or
+                          re.fullmatch(r'extruder\d+', n) or n == 'heater_bed' or
+                          n.startswith('heater_generic ')},
+                         key=lambda n: (0, 0) if n == 'extruder' else
+                         (0, int(n[8:])) if re.fullmatch(r'extruder\d+', n) else
+                         (1, 0) if n == 'heater_bed' else (2, n))
+        sensors = sorted({n for n in self.all_objects
+                          if n.startswith(('temperature_sensor ', 'temperature_fan '))
+                          and any(word in n.lower() for word in ('chamber', 'kammer'))})
+        signature = (tuple(heaters), tuple(sensors))
+        if signature != self._print_temp_signature:
+            self._print_temp_signature = signature
+            self.print_temp_widgets = {}
+            while self.print_temp_grid.count():
+                item = self.print_temp_grid.takeAt(0)
+                if item.widget():
+                    item.widget().deleteLater()
+            cols = 1 if self.compact else 2
+            for i, name in enumerate(heaters + sensors):
+                title = ('T0 · Hotend' if name == 'extruder' else
+                         'T' + name[8:] + ' · Hotend' if re.fullmatch(r'extruder\d+', name) else
+                         'Heizbett' if name == 'heater_bed' else name.split(' ', 1)[-1])
+                tile, lay = card()
+                lay.setContentsMargins(6, 4, 6, 4)
+                lay.setSpacing(3)
+                lay.addWidget(label(title))
+                reading = label('-- °C', 'metric')
+                reading.setWordWrap(False)
+                line = QHBoxLayout()
+                line.addWidget(reading, 1)
+                target = None
+                if name in heaters:
+                    target = button('Target -- °C', partial(self.set_print_heater, name), True)
+                    target.setEnabled(False)
+                    line.addWidget(target, 1)
+                else:
+                    line.addWidget(label('Sensor only', 'caption'))
+                lay.addLayout(line)
+                self.print_temp_widgets[name] = (reading, target)
+                self.print_temp_grid.addWidget(tile, i // cols, i % cols)
+        self._print_temp_live = True
+        self.print_temp_info.setVisible(not bool(heaters or sensors))
+        if not (heaters or sensors):
+            self.print_temp_info.setText(tr('No heaters or chamber sensors found.'))
+        for name, (reading, target) in self.print_temp_widgets.items():
+            data = st.get(name, {})
+            reading.setText(fmt(data.get('temperature')) + ' °C')
+            if target is not None:
+                target.setText(tr('Target') + ' ' + fmt(data.get('target'), 0) + ' °C  ✎')
+                maximum = fval(st.get('configfile', {}).get('settings', {}).get(name, {}).get('max_temp'), 0)
+                target.setEnabled(data.get('target') is not None and math.isfinite(maximum) and maximum > 1)
+
+    def set_print_heater(self, heater):
+        """Reuse the existing touch keypad and heater command, only with live limits."""
+        if not self._print_temp_live or heater not in self.all_objects:
+            return
+        cfg = self.s.get('configfile', {}).get('settings', {}).get(heater, {})
+        maximum = fval(cfg.get('max_temp'), 0)
+        if not math.isfinite(maximum) or maximum <= 1:
+            warn(self, 'Print temperatures', 'Heater temperature limit is unavailable.')
+            return
+        self.set_heater(heater)
 
     def update_temps(self, st):
         heaters = [x for x in self.all_objects if x == 'extruder' or re.fullmatch(r'extruder\d+',x)
