@@ -1631,6 +1631,14 @@ class Screen(QWidget):
         self.selected_macros = {x.strip().upper() for x in
                                 conf('macro_visibility', 'visible', '').split(',') if x.strip()}
         self.macro_check_widgets = {}
+        # Display-only jog settings; no changes to Klipper motor direction or G28.
+        self.jog_invert = {axis: conf('jog', 'invert_' + axis.lower(), 'false').strip().lower()
+                           in ('true', 'yes', '1', 'on') for axis in ('X', 'Y', 'Z')}
+        self.jog_speed = {
+            'X': max(1.0, min(500.0, fval(conf('jog', 'speed_x', '100'), 100))),
+            'Y': max(1.0, min(500.0, fval(conf('jog', 'speed_y', '100'), 100))),
+            'Z': max(0.1, min(50.0, fval(conf('jog', 'speed_z', '10'), 10))),
+        }
         self.confirm_enabled = conf('behavior','confirm_commands','false').strip().lower() in ('true','yes','1','on')
         self.notifications_enabled = conf('notifications', 'enabled', 'true').strip().lower() in ('true', 'yes', '1', 'on')
         self.notification_duration = int(max(2, min(10, fval(conf('notifications', 'duration_seconds', '4'), 4))))
@@ -1711,7 +1719,7 @@ class Screen(QWidget):
             self.pages[name] = self._page(name, builder)
             self.stack.addWidget(self.pages[name])
         nav_layout.addStretch()
-        sl.addWidget(label('v0.3.10 alpha', 'caption'))
+        sl.addWidget(label('v0.3.11 alpha', 'caption'))
         # IMPORTANT: Qt otherwise deletes self.connection and all nav buttons.
         outer.addWidget(sidebar)
         sidebar.setVisible(not self.compact)
@@ -2582,6 +2590,33 @@ class Screen(QWidget):
              'and PolicyKit permissions for the VeloxScreen user. No root access is granted by VeloxScreen.')
 
     def make_settings(self, l):
+        f, c = card('Manual movement / Jog')
+        c.addWidget(label('Reverse the X, Y or Z jog buttons and set their manual move speeds. '
+                          'Only affects movement from VeloxScreen, not homing, printing or Klipper motor direction.',
+                          'caption'))
+        self.jog_settings_invert = {}
+        self.jog_settings_speed = {}
+        for axis in ('X', 'Y', 'Z'):
+            c.addWidget(label(axis + ' axis', 'caption'))
+            reverse = TouchCheckBox('Invert ' + axis + ' jog direction')
+            reverse.setChecked(self.jog_invert[axis])
+            c.addWidget(reverse)
+            self.jog_settings_invert[axis] = reverse
+            speed_row = QHBoxLayout()
+            speed_row.addWidget(label(axis + ' jog speed (mm/s)'))
+            speed = TouchSpinBox()
+            speed.setDecimals(1)
+            speed.setRange(0.1 if axis == 'Z' else 1.0, 50.0 if axis == 'Z' else 500.0)
+            speed.setSingleStep(1.0 if axis == 'Z' else 5.0)
+            speed.setValue(self.jog_speed[axis])
+            speed.setProperty('touch_title', axis + ' Jog speed (mm/s)')
+            speed_row.addWidget(speed)
+            c.addLayout(speed_row)
+            self.jog_settings_speed[axis] = speed
+        c.addWidget(button('Save jog settings', self.save_jog_settings, True))
+        self.jog_settings_status = label('', 'caption')
+        c.addWidget(self.jog_settings_status)
+        l.addWidget(f)
         f, c = card('Startup screen')
         self.show_splash_checkbox = TouchCheckBox(tr('Show startup screen'))
         self.show_splash_checkbox.setChecked(startup_bool('show_splash', True))
@@ -2661,6 +2696,25 @@ class Screen(QWidget):
         c.addWidget(label(str(CFG_PATH), 'caption'))
         c.addWidget(label('Makros ein-/ausblenden unter Makros. Die Einstellungen werden in veloxscreen.conf gespeichert.', 'caption'))
         l.addWidget(f)
+
+    def save_jog_settings(self):
+        values = {axis: (self.jog_settings_invert[axis].isChecked(),
+                         self.jog_settings_speed[axis].value()) for axis in ('X', 'Y', 'Z')}
+        # Single atomic write. Only change live UI behavior once saved.
+        if not config.has_section('jog'):
+            config.add_section('jog')
+        for axis, (inverted, speed) in values.items():
+            config.set('jog', 'invert_' + axis.lower(), 'true' if inverted else 'false')
+            config.set('jog', 'speed_' + axis.lower(), f'{speed:g}')
+        try:
+            save_config()
+        except OSError as exc:
+            self.jog_settings_status.setText('Could not save jog settings.')
+            warn(self, 'Jog settings', str(exc))
+            return
+        self.jog_invert = {axis: inverted for axis, (inverted, _) in values.items()}
+        self.jog_speed = {axis: speed for axis, (_, speed) in values.items()}
+        self.jog_settings_status.setText('Jog settings saved. Applies immediately.')
 
     def change_confirmation(self, checked):
         previous = self.confirm_enabled
@@ -3303,8 +3357,11 @@ class Screen(QWidget):
             warn(self, 'Achsen', 'Achse ist nicht referenziert.')
             return
         dist = fval(self.jog_step.currentText()) * direction
-        feed = 600 if axis == 'Z' else 6000
-        self.network.script(f'SAVE_GCODE_STATE NAME=VELOX_JOG\nG91\nG1 {axis}{dist:g} F{feed}\nRESTORE_GCODE_STATE NAME=VELOX_JOG')
+        if self.jog_invert.get(axis, False):
+            dist = -dist
+        # G-code F is mm/min; UI displays mm/s.
+        feed = round(self.jog_speed.get(axis, 10.0 if axis == 'Z' else 100.0) * 60, 3)
+        self.network.script(f'SAVE_GCODE_STATE NAME=VELOX_JOG\nG91\nG1 {axis}{dist:g} F{feed:g}\nRESTORE_GCODE_STATE NAME=VELOX_JOG')
         self.log(f'>> Jog {axis} {dist:+g} mm')
 
     def update_calib(self, st):

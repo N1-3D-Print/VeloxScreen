@@ -21,6 +21,16 @@ lengths = 1, 5, 10, 50, 100
 speeds = 2, 5, 10, 20, 50
 jog_steps = 1, 5, 15, 25, 50
 
+[jog]
+# Affects only the manual X/Y/Z movement buttons in VeloxScreen.
+# No effect on homing, print moves or Klipper stepper direction.
+invert_x = false
+invert_y = false
+invert_z = false
+speed_x = 100
+speed_y = 100
+speed_z = 10
+
 [tools]
 # Empty means automatic extrusion-object discovery.
 # Optional tool-to-extruder mappings (adjust to your machine):

@@ -1,3 +1,10 @@
+## v0.3.11-alpha — Jog settings
+
+- Settings: invert X, Y and Z jogging independently; adjust per-axis manual jog speed in mm/s.
+- Settings saved in `[jog]` and applied immediately without restarting.
+- Only touchscreen jog commands are affected, not homing or print kinematics.
+- Includes all fixes/features from v0.3.10.
+
 ## v0.3.10-alpha — One-finger sidebar navigation
 
 - Use the same kinetic `FingerScrollArea` for sidebar navigation and the main content.

@@ -95,3 +95,19 @@ LED effect controls appear when Klipper exposes `led_effect` objects from the op
 ## Wi-Fi network control (experimental)
 
 VeloxScreen uses `nmcli` from NetworkManager to list and connect to Wi-Fi networks. The app user must have NetworkManager permissions (typically via a local PolicyKit session). The interface does not add passwordless sudo rules or save Wi-Fi passwords to `veloxscreen.conf`. Connecting to another network can interrupt remote access; use the display physically and keep a backup connection. WPA-Personal / open networks are supported by the initial implementation.
+
+## Manual jog direction and speed
+
+The Settings page controls manual movement only. Settings are stored in `[jog]`:
+
+```ini
+[jog]
+invert_x = false
+invert_y = false
+invert_z = false
+speed_x = 100
+speed_y = 100
+speed_z = 10
+```
+
+Speeds are mm/s; X/Y accept 1–500 and Z 0.1–50. Jog commands convert to mm/min for G-code. These settings do **not** change homing or motor directions in Klipper.
