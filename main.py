@@ -27,7 +27,7 @@ from PyQt5.QtWidgets import (
     QApplication, QWidget, QLabel, QPushButton, QVBoxLayout, QHBoxLayout,
     QScrollArea, QFrame, QGridLayout, QStackedWidget, QComboBox, QDoubleSpinBox, QCheckBox,
     QLineEdit, QPlainTextEdit, QMessageBox, QInputDialog, QSplitter, QSizePolicy, QDialog, QScroller, QScrollerProperties, QSlider,
-    QGraphicsOpacityEffect, QListWidget, QListWidgetItem, QAbstractItemView, QProgressBar, QButtonGroup
+    QGraphicsOpacityEffect, QListWidget, QListWidgetItem, QAbstractItemView, QProgressBar, QButtonGroup, QStyle, QStyleOptionSlider
 )
 
 BASE = Path(__file__).resolve().parent
@@ -88,6 +88,25 @@ def ordered_items(defaults, preferred):
     return list(dict.fromkeys([v for v in preferred if v in allowed] + defaults))
 
 
+# Only page sections are hideable; navigation, individual object ordering and
+# the safety/recovery controls remain accessible.
+PAGE_LAYOUT_KEYS = frozenset(('dashboard_order', 'print_order', 'control_order',
+    'tools_order', 'temperatures_order', 'macros_order', 'settings_order',
+    'network_order', 'console_order'))
+
+
+def layout_hidden_key(key):
+    return key[:-6] + '_hidden' if key in PAGE_LAYOUT_KEYS else None
+
+
+def section_hideable(key, ident):
+    return layout_hidden_key(key) is not None and not (key == 'settings_order' and ident == 'recovery')
+
+
+def section_visible(key, ident, hidden):
+    return not section_hideable(key, ident) or ident not in hidden
+
+
 def dashboard_temperature_names(objects, preferred=()):
     """Keep every hotend and the bed, plus a prioritized chamber tile.
 
@@ -139,6 +158,36 @@ def fval(v, fallback=0.0):
         return float(v)
     except (TypeError, ValueError):
         return fallback
+
+
+def fan_percent(status, name):
+    """Normalize Klipper's reported PWM duty to the configured 0–100% range."""
+    speed = fval(status.get(name, {}).get('speed'), float('nan'))
+    if not math.isfinite(speed):
+        return None
+    cfg = status.get('configfile', {}).get('settings', {}).get(name.lower(), {})
+    maximum = fval(cfg.get('max_power'), 1.0)
+    if not math.isfinite(maximum) or not 0 < maximum <= 1:
+        maximum = 1.0
+    return int(math.floor(max(0., min(1., speed / maximum)) * 100 + .5))
+
+
+def fan_command(name, value):
+    """Send requested fraction, NOT duty cycle; Klipper applies max_power."""
+    if name == 'fan':
+        return f'M106 S{(value * 255 + 50) // 100}'
+    if name.startswith('fan_generic '):
+        return f'SET_FAN_SPEED FAN={name.split(" ", 1)[1]} SPEED={value / 100:.3f}'
+    return None
+
+
+def fan_display_target(current, pending, now):
+    """Return (display percent, still waiting) for an outstanding command."""
+    if pending is not None:
+        target, when = pending
+        if (current is None or abs(current - target) > 1) and now - when < 4.0:
+            return target, True
+    return current, False
 
 
 def heater_state(data):
@@ -1227,8 +1276,8 @@ _ADDED_EN_DE = {
     ('Keep display on while printing / paused', 'Display während Druck / Pause anlassen'),
     ('Pause', 'Pause'), ('Resume', 'Fortsetzen'), ('Cancel', 'Abbrechen'),
     ('Customize layout', 'Layout anpassen'), ('Edit layout', 'Layout bearbeiten'),
-    ('Reorder blocks, navigation, fans and temperature tiles. Safety controls stay fixed.',
-     'Blöcke, Navigation, Lüfter und Temperaturkacheln sortieren. Sicherheitsfunktionen bleiben fest.'),
+    ('Show, hide and reorder menu sections; reorder navigation, fans and temperature tiles. Safety controls stay fixed.',
+     'Menübereiche ein- und ausblenden sowie Navigation, Lüfter und Temperaturkacheln sortieren. Sicherheitsfunktionen bleiben fest.'),
     ('Dashboard blocks', 'Dashboard-Blöcke'), ('Print blocks', 'Druck-Blöcke'),
     ('Control blocks', 'Steuerungs-Blöcke'), ('Tools blocks', 'Werkzeug-Blöcke'),
     ('Temperature blocks', 'Temperatur-Blöcke'), ('Macro blocks', 'Makro-Blöcke'),
@@ -1237,6 +1286,9 @@ _ADDED_EN_DE = {
     ('Live motion', 'Live-Bewegungswerte'), ('Motion limits / Motors Off', 'Bewegungsgrenzen / Motoren aus'),
     ('Print status', 'Druckstatus'), ('Run macros', 'Makros ausführen'),
     ('Macro visibility', 'Makro-Sichtbarkeit'), ('Heaters / Sensors', 'Heizer / Sensoren'),
+    ('Check to show · uncheck to hide', 'Haken setzen zum Anzeigen · entfernen zum Ausblenden'),
+    ('Console history', 'Konsolenverlauf'), ('Command input', 'Befehlseingabe'),
+    ('Reset layout', 'Layout zurücksetzen'), ('Network blocks', 'Netzwerk-Blöcke'), ('Console blocks', 'Konsolen-Blöcke'),
     ('↑ Up', '↑ Hoch'), ('↓ Down', '↓ Runter'), ('Reset order', 'Reihenfolge zurücksetzen'),
     ('Drag mode (hold and move)', 'Ziehmodus (halten und ziehen)'), ('Save layout', 'Layout speichern'),
     ('Could not save layout:', 'Layout konnte nicht gespeichert werden:'),
@@ -1744,6 +1796,49 @@ class FingerScrollArea(QScrollArea):
         props.setScrollMetric(QScrollerProperties.HorizontalOvershootPolicy,
                               QScrollerProperties.OvershootAlwaysOff)
         scroller.setScrollerProperties(props)
+
+
+class TapFanSlider(QSlider):
+    """Absolute track taps and continuous dragging; one commit on release."""
+    def _position_value(self, point):
+        opt = QStyleOptionSlider()
+        self.initStyleOption(opt)
+        style = self.style()
+        groove = style.subControlRect(QStyle.CC_Slider, opt, QStyle.SC_SliderGroove, self)
+        handle = style.subControlRect(QStyle.CC_Slider, opt, QStyle.SC_SliderHandle, self)
+        start = groove.x() + handle.width() // 2
+        span = max(1, groove.width() - handle.width())
+        return QStyle.sliderValueFromPosition(self.minimum(), self.maximum(),
+            max(0, min(span, point.x() - start)), span, opt.upsideDown)
+
+    def mousePressEvent(self, event):
+        if event.button() != Qt.LeftButton:
+            super().mousePressEvent(event)
+            return
+        self.setSliderDown(True)
+        self.setSliderPosition(self._position_value(event.pos()))
+        event.accept()
+
+    def mouseMoveEvent(self, event):
+        if self.isSliderDown() and event.buttons() & Qt.LeftButton:
+            self.setSliderPosition(self._position_value(event.pos()))
+            event.accept()
+        else:
+            super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.LeftButton and self.isSliderDown():
+            # QScroller may synthesize a release far outside the widget.
+            # Never interpret that cancellation as a new command.
+            if event.pos().x() < -10000 or event.pos().y() < -10000:
+                self.blockSignals(True)
+                self.setSliderDown(False)
+                self.blockSignals(False)
+            else:
+                self.setSliderDown(False)
+            event.accept()
+        else:
+            super().mouseReleaseEvent(event)
 
 
 class TouchNumberDialog(QDialog):
@@ -2655,6 +2750,7 @@ class LayoutEditor(QDialog):
         super().__init__(parent)
         self.catalog = catalog
         self.changes = {}
+        self.hidden_changes = {}
         self.key = None
         self.loading = False
         self.setWindowTitle(tr('Customize layout'))
@@ -2669,6 +2765,8 @@ class LayoutEditor(QDialog):
         for key, (title, _) in catalog.items():
             self.category.addItem(tr(title), key)
         outer.addWidget(self.category)
+        self.visibility_hint = label("Check to show · uncheck to hide", "caption")
+        outer.addWidget(self.visibility_hint)
         self.items = LayoutOrderList()
         self.items.setMinimumHeight(30)
         self.items.setSelectionMode(QAbstractItemView.SingleSelection)
@@ -2676,13 +2774,14 @@ class LayoutEditor(QDialog):
         self.items.setVerticalScrollMode(QAbstractItemView.ScrollPerPixel)
         self.items.setSpacing(1)
         self.items.setStyleSheet('QListWidget::item { padding: 5px; } '
+                                 'QListWidget::indicator { width: 26px; height: 26px; } '
                                  'QListWidget::item:selected { background: ' + parent.theme['accent_color'] +
                                  '; color: ' + text_on(parent.theme['accent_color']) + '; }' )
         outer.addWidget(self.items, 1)
         moves = QHBoxLayout()
         self.up = button('↑ Up', partial(self.move_item, -1))
         self.down = button('↓ Down', partial(self.move_item, 1))
-        self.reset = button('Reset order', self.reset_order)
+        self.reset = button('Reset layout', self.reset_order)
         for b in (self.up, self.down, self.reset):
             b.setMinimumHeight(24 if parent.tiny else 36)
             moves.addWidget(b)
@@ -2700,6 +2799,7 @@ class LayoutEditor(QDialog):
         self.category.currentIndexChanged.connect(self.load_category)
         self.items.currentRowChanged.connect(self.update_arrows)
         self.items.order_changed.connect(self.record_order)
+        self.items.itemChanged.connect(self.record_visibility)
         self.set_drag_mode(False)
         self.load_category()
 
@@ -2722,11 +2822,17 @@ class LayoutEditor(QDialog):
         names = dict(entries)
         order = ordered_items(names, self.changes.get(self.key, read_layout_order(self.key)))
         self.loading = True
+        hidden_key = layout_hidden_key(self.key)
+        hidden = self.hidden_changes.get(hidden_key, read_layout_order(hidden_key) if hidden_key else [])
+        self.visibility_hint.setVisible(hidden_key is not None)
         self.items.clear()
         for ident in order:
             item = QListWidgetItem(names[ident])
             item.setData(Qt.UserRole, ident)
             item.setToolTip(names[ident])
+            if section_hideable(self.key, ident):
+                item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
+                item.setCheckState(Qt.Unchecked if ident in hidden else Qt.Checked)
             self.items.addItem(item)
         if self.items.count():
             self.items.setCurrentRow(0)
@@ -2738,6 +2844,15 @@ class LayoutEditor(QDialog):
             self.changes[self.key] = [self.items.item(i).data(Qt.UserRole)
                                       for i in range(self.items.count())]
             self.update_arrows()
+
+    def record_visibility(self, *_):
+        if self.loading or not layout_hidden_key(self.key):
+            return
+        hidden_key = layout_hidden_key(self.key)
+        self.hidden_changes[hidden_key] = [self.items.item(i).data(Qt.UserRole)
+            for i in range(self.items.count())
+            if section_hideable(self.key, self.items.item(i).data(Qt.UserRole))
+            and self.items.item(i).checkState() == Qt.Unchecked]
 
     def update_arrows(self, *_):
         index = self.items.currentRow()
@@ -2756,6 +2871,9 @@ class LayoutEditor(QDialog):
 
     def reset_order(self):
         self.changes[self.key] = []
+        hidden_key = layout_hidden_key(self.key)
+        if hidden_key:
+            self.hidden_changes[hidden_key] = []
         self.load_category()
 
 
@@ -3021,7 +3139,6 @@ class Screen(QWidget):
         self.macro_names = []
         self.macro_commands = {}
         self._fan_pending = {}
-        self._fan_timers = {}
         self._fan_last_sent = {}
         self.motor_off_buttons = []
         # M220/M221 G-code modifiers (not toolhead max limits).
@@ -3148,7 +3265,7 @@ class Screen(QWidget):
             self.pages[name] = self._page(name, builder)
             self.stack.addWidget(self.pages[name])
         nav_layout.addStretch()
-        sl.addWidget(label('v0.4.11 alpha', 'caption'))
+        sl.addWidget(label('v0.4.12 alpha', 'caption'))
         # IMPORTANT: Qt otherwise deletes self.connection and all nav buttons.
         outer.addWidget(sidebar)
         sidebar.setVisible(not self.compact)
@@ -3214,10 +3331,13 @@ class Screen(QWidget):
 
     def apply_layout_orders(self):
         for key, (layout, blocks) in self.layout_groups.items():
+            hidden_key = layout_hidden_key(key)
+            hidden = read_layout_order(hidden_key) if hidden_key else []
             for ident in ordered_items(blocks, read_layout_order(key)):
                 widget = blocks[ident][0]
                 layout.removeWidget(widget)
                 layout.addWidget(widget)
+                widget.setVisible(section_visible(key, ident, hidden))
         active = next((name for name, page in self.pages.items()
                        if page is self.stack.currentWidget()), 'Dashboard')
         self.nav_order = ordered_items(self.nav_defaults, read_layout_order('nav_order'))
@@ -3238,7 +3358,8 @@ class Screen(QWidget):
         titles = {'dashboard_order': 'Dashboard blocks', 'print_order': 'Print blocks',
                   'control_order': 'Control blocks', 'tools_order': 'Tools blocks',
                   'temperatures_order': 'Temperature blocks', 'macros_order': 'Macro blocks',
-                  'settings_order': 'Settings blocks'}
+                  'settings_order': 'Settings blocks', 'network_order': 'Network blocks',
+                  'console_order': 'Console blocks'}
         for key, (_, blocks) in self.layout_groups.items():
             groups[key] = (titles[key], [(ident, tr(title)) for ident, (_, title) in blocks.items()])
         fans = sorted(n for n in self.all_objects if n == 'fan' or
@@ -3262,7 +3383,7 @@ class Screen(QWidget):
 
     def open_layout_editor(self):
         editor = LayoutEditor(self, self.layout_catalog())
-        if editor.exec_() != QDialog.Accepted or not editor.changes:
+        if editor.exec_() != QDialog.Accepted or not (editor.changes or editor.hidden_changes):
             return
         had_section = config.has_section('layout')
         old = dict(config.items('layout')) if had_section else {}
@@ -3273,6 +3394,8 @@ class Screen(QWidget):
                 # Keep the old fan_order format compatible with existing configs.
                 value = ', '.join(order) if key == 'fan_order' else json.dumps(order, ensure_ascii=False)
                 config.set('layout', key, value)
+            for key, hidden in editor.hidden_changes.items():
+                config.set('layout', key, json.dumps(hidden, ensure_ascii=False))
             save_config()
         except (OSError, ValueError) as exc:
             config.remove_section('layout')
@@ -3905,7 +4028,7 @@ class Screen(QWidget):
                 content.addWidget(info)
                 slider = None
                 if name == 'fan' or name.startswith('fan_generic '):
-                    slider = QSlider(Qt.Horizontal)
+                    slider = TapFanSlider(Qt.Horizontal)
                     slider.setRange(0, 100)
                     slider.setSingleStep(1)
                     slider.setPageStep(5)
@@ -3920,19 +4043,7 @@ class Screen(QWidget):
                 self.print_fan_area.addWidget(frame)
             if not fans:
                 self.print_fan_area.addWidget(label('No manual fans detected.', 'caption'))
-        for name, (info, slider) in self.print_fan_widgets.items():
-            current = round(fval(st.get(name, {}).get('speed')) * 100)
-            pending = self._fan_pending.get(name)
-            if pending and abs(current - pending[0]) > 1 and time.monotonic() - pending[1] < 4:
-                current = pending[0]
-            if slider is not None:
-                if slider.isSliderDown():
-                    info.setText(f'{slider.value()} %')
-                    continue
-                slider.blockSignals(True)
-                slider.setValue(current)
-                slider.blockSignals(False)
-            info.setText(f'{current} %')
+        self.refresh_fan_widgets(self.print_fan_widgets, st)
 
     def print_fan_slider_changed(self, name, value):
         pair = self.print_fan_widgets.get(name)
@@ -3941,18 +4052,8 @@ class Screen(QWidget):
 
     def print_fan_slider_released(self, name):
         pair = self.print_fan_widgets.get(name)
-        if pair is None or pair[1] is None:
-            return
-        value = pair[1].value()
-        if self._fan_last_sent.get(name) == value:
-            return
-        self._fan_last_sent[name] = value
-        self._fan_pending[name] = (value, time.monotonic())
-        if name == 'fan':
-            command = f'M106 S{round(value * 255 / 100)}'
-        else:
-            command = f'SET_FAN_SPEED FAN={name.split(" ", 1)[1]} SPEED={value / 100:.3f}'
-        self.network.script(command)
+        if pair is not None and pair[1] is not None:
+            self.send_fan_value(name, pair[1].value())
 
     def make_dashboard(self, l):
         root = l
@@ -4542,10 +4643,13 @@ class Screen(QWidget):
         l.addWidget(f)
 
     def make_console(self, l):
+        root = l
+        l = self.layout_block('console_order', root, 'history', 'Console history')
         self.console = QPlainTextEdit()
         self.console.setReadOnly(True)
         self.console.setMinimumHeight(210)
         l.addWidget(self.console)
+        l = self.layout_block('console_order', root, 'command', 'Command input')
         self.console_input = TouchCommandInput(self)
         self.console_input.setPlaceholderText(tr('Tap to enter G-Code / macro'))
         l.addLayout(row(self.console_input,
@@ -5450,6 +5554,8 @@ class Screen(QWidget):
 
 
     def make_network(self, l):
+        root = l
+        l = self.layout_block('network_order', root, 'connection', 'Wi-Fi / NetworkManager')
         f, c = card('Wi-Fi / NetworkManager')
         self.wifi_status = label('Tap Scan to find Wi-Fi networks.', 'caption')
         c.addWidget(self.wifi_status)
@@ -5459,6 +5565,7 @@ class Screen(QWidget):
         c.addWidget(self.wifi_scan_button)
         c.addWidget(label('Connecting to another Wi-Fi can interrupt SSH and Moonraker access.', 'caption'))
         l.addWidget(f)
+        l = self.layout_block('network_order', root, 'networks', 'Available networks')
         f, c = card('Available networks')
         self.wifi_networks_area = QVBoxLayout()
         c.addLayout(self.wifi_networks_area)
@@ -5554,7 +5661,7 @@ class Screen(QWidget):
     def make_settings(self, l):
         f, c = card('Customize layout')
         c.addWidget(button('Edit layout', self.open_layout_editor, True))
-        c.addWidget(label('Reorder blocks, navigation, fans and temperature tiles. Safety controls stay fixed.', 'caption'))
+        c.addWidget(label('Show, hide and reorder menu sections; reorder navigation, fans and temperature tiles. Safety controls stay fixed.', 'caption'))
         l.addWidget(f)
         root = l
         l = self.layout_block('settings_order', root, 'comfort', 'Display comfort')
@@ -6543,12 +6650,6 @@ class Screen(QWidget):
         signature = tuple(fans)
         if signature != self._last_fan_signature:
             self._last_fan_signature = signature
-            for timer in self._fan_timers.values():
-                timer.stop()
-                timer.deleteLater()
-            self._fan_timers = {}
-            self._fan_pending.clear()
-            self._fan_last_sent.clear()
             self.fan_widgets = {}
             while self.fan_area.count():
                 item = self.fan_area.takeAt(0)
@@ -6559,7 +6660,7 @@ class Screen(QWidget):
                 value_label = label('— %', 'metric')
                 layout.addWidget(value_label)
                 if name == 'fan' or name.startswith('fan_generic '):
-                    slider = QSlider(Qt.Horizontal)
+                    slider = TapFanSlider(Qt.Horizontal)
                     slider.setRange(0, 100)
                     slider.setSingleStep(1)
                     slider.setPageStep(5)
@@ -6568,70 +6669,52 @@ class Screen(QWidget):
                     slider.valueChanged.connect(partial(self.fan_slider_changed, name))
                     layout.addWidget(slider)
                     slider.sliderReleased.connect(partial(self.fan_slider_released, name))
-                    timer = QTimer(self)
-                    timer.setSingleShot(True)
-                    timer.timeout.connect(partial(self.apply_fan, name))
-                    self._fan_timers[name] = timer
                     self.fan_widgets[name] = (value_label, slider)
                 else:
                     layout.addWidget(label('Automatisch geregelt · nur Anzeige', 'caption'))
                     self.fan_widgets[name] = (value_label, None)
                 self.fan_area.addWidget(frame)
-        for name, (value_label, slider) in getattr(self, 'fan_widgets', {}).items():
-            current = round(fval(st.get(name, {}).get('speed')) * 100)
-            if slider is None:
-                value_label.setText(f'{current} %')
-                continue
+        self.refresh_fan_widgets(self.fan_widgets, st)
+
+    def refresh_fan_widgets(self, widgets, status):
+        for name, (info, slider) in widgets.items():
+            current = fan_percent(status, name)
             pending = self._fan_pending.get(name)
-            if pending:
-                target, when = pending
-                if abs(current - target) <= 1:
-                    self._fan_pending.pop(name, None)
-                elif time.monotonic() - when < 4.0:
-                    value_label.setText(f'{slider.value()} %')
-                    continue  # Moonraker poll hasn't caught up with latest drag value
-                else:
-                    self._fan_pending.pop(name, None)
-            timer = self._fan_timers.get(name)
-            if slider.isSliderDown() or (timer and timer.isActive()):
-                value_label.setText(f'{slider.value()} %')
-                continue
-            slider.blockSignals(True)
-            slider.setValue(current)
-            slider.blockSignals(False)
-            value_label.setText(f'{current} %')
-            self._fan_last_sent[name] = current
+            display, waiting = fan_display_target(current, pending, time.monotonic())
+            if not waiting:
+                self._fan_pending.pop(name, None)
+                self._fan_last_sent[name] = current
+            if slider is not None:
+                slider.setEnabled(current is not None)
+                if slider.isSliderDown():
+                    info.setText(f'{slider.value()} %')
+                    continue
+                if display is not None:
+                    slider.blockSignals(True)
+                    slider.setValue(display)
+                    slider.blockSignals(False)
+            info.setText('-- %' if display is None else f'{display} %')
 
     def fan_slider_changed(self, name, value):
         pair = getattr(self, 'fan_widgets', {}).get(name)
-        if not pair or pair[1] is None:
-            return
-        pair[0].setText(f'{value} %')
-        timer = self._fan_timers.get(name)
-        if timer is not None and not timer.isActive():
-            timer.start(140)  # sample latest slider position every ~140 ms while dragging
+        if pair is not None:
+            pair[0].setText(f'{value} %')
 
     def fan_slider_released(self, name):
-        timer = self._fan_timers.get(name)
-        if timer is not None:
-            timer.stop()
-        self.apply_fan(name)  # final value is sent immediately on release
-
-    def apply_fan(self, name):
         pair = getattr(self, 'fan_widgets', {}).get(name)
-        if not pair or pair[1] is None:
+        if pair is not None and pair[1] is not None:
+            self.send_fan_value(name, pair[1].value())
+
+    def send_fan_value(self, name, value):
+        if self.live_print_state() is None or fan_percent(self._live_status, name) is None:
             return
-        value = pair[1].value()
-        if self._fan_last_sent.get(name) == value:
+        command = fan_command(name, value)
+        if command is None or self._fan_last_sent.get(name) == value:
             return
         self._fan_last_sent[name] = value
         self._fan_pending[name] = (value, time.monotonic())
-        if name == 'fan':
-            script = f'M106 S{round(value * 255 / 100)}'
-        else:
-            script = f'SET_FAN_SPEED FAN={name.split(" ", 1)[1]} SPEED={value / 100:.3f}'
-        # Fan controls are instant, irrespective of the general confirmation setting.
-        self.network.script(script)
+        # Same requested percent on both pages; no command on status refresh.
+        self.network.script(command)
 
     def led_fade_value(self):
         return float(self.led_fade.currentText())

@@ -6,9 +6,13 @@
 Responsive layout for small Raspberry Pi touchscreens (experimental 320 × 240 to 1024 × 600). No browser required.
 
 > [!WARNING]
-> **Early Alpha (v0.4.11)** — bugs and incomplete features are expected. Test printer controls carefully. Found an issue? **Please open a GitHub Issue!** Feedback and suggestions are welcome.
+> **Early Alpha (v0.4.12)** — bugs and incomplete features are expected. Test printer controls carefully. Found an issue? **Please open a GitHub Issue!** Feedback and suggestions are welcome.
 
-## What's new in v0.4.11 Alpha
+## What's new in v0.4.12 Alpha
+
+**Menu layout and fan controls:** show/hide individual menu sections and reorder them in Settings → Customize layout → Edit layout. Safety controls and the layout editor remain accessible. Print and Control fan sliders support absolute track taps and drag, commit once on release, and normalize reported duty by Klipper's configured `max_power` without changing the command scale or firmware limits.
+
+### Previous update: v0.4.11
 
 **Dashboard multi-tool temperatures:** all discovered hotends and the bed are shown, plus a prioritized chamber reading when available. The grid grows vertically and retains saved temperature ordering; no configuration changes required. Other generic heaters fill spare slots, and the full Temperatures page remains available.
 
@@ -68,7 +72,7 @@ Homing buttons are grey until their axes are reported homed, then blue. Locally 
 
 ## Customize the layout
 
-Open **Settings → Customize layout → Edit layout**. Choose a category, select an item and tap **Up / Down**, or enable **Drag mode** to reorder by dragging. **Save layout** applies changes without restarting; **Reset order** restores the selected category's defaults when saved.
+Open **Settings → Customize layout → Edit layout**. Choose a category, select an item and tap **Up / Down**, or enable **Drag mode** to reorder by dragging. For menu-block categories, uncheck sections to hide them (including Print → Temperature history). **Save layout** applies visibility and order without restarting; **Reset layout** restores the selected category's default order and visibility when saved. Navigation and object categories remain reorder-only.
 
 Dashboard, Print, Control, Tools, Temperatures, Macros and Settings support block ordering. Navigation, fans, heater/sensor tiles, macro buttons and temperature presets have shared item orders. Print still shows only `fan` and `fan_generic`; its status, emergency stop and recovery controls stay fixed. The Dashboard emergency stop and printer fault banner also stay fixed. This is responsive ordering, not free-pixel placement or resizing. New items are appended automatically. All settings remain in `veloxscreen.conf`.
 

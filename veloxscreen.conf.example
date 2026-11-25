@@ -76,12 +76,15 @@ ABS = nozzle:250, bed:100
 [layout]
 # Fan objects are automatically detected. Optional explicit ordering:
 # fan_order = fan, fan_generic aux
-# Use Settings > Customize layout to edit these orders (empty = defaults).
+# Use Settings > Customize layout to change order and visibility (empty = defaults).
+# print_hidden = ["temperature_history"]
+# dashboard_hidden, control_hidden, tools_hidden, temperatures_hidden, macros_hidden,
+# settings_hidden, network_hidden and console_hidden are optional JSON lists.
 # print_order = ["temperatures", "fans", "motion", "overrides"]
 # dashboard_order = ["temperatures", "motion", "overrides", "print_status", "presets", "motion_limits", "homing"]
 # temperature_order = ["heater_bed", "extruder", "extruder1"]
 # nav_order, control_order, tools_order, temperatures_order, macros_order,
-# settings_order, macro_order and preset_order are also supported.
+# settings_order, network_order, console_order, macro_order and preset_order are also supported.
 # chamber_heater = heater_generic chamber_heater
 
 [behavior]

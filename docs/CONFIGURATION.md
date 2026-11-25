@@ -22,7 +22,7 @@ The app also supports a legacy `veloxscreen.conf` next to `main.py` as a fallbac
 | `[filament_macros]` | Optional exact filament macro commands / disable keys |
 | `[temperature_presets]` | Any number of hotend/bed/chamber presets |
 | `[macros]` | Optional quick macro commands |
-| `[layout]` | Custom block, navigation and item ordering; optional custom chamber-heater mapping |
+| `[layout]` | Custom block visibility, block/navigation/item ordering; optional custom chamber-heater mapping |
 | `[behavior]` | Confirmation prompts before G-Code commands |
 | `[macro_visibility]` | Show all/selected macros; allowlist/denylist |
 | `[led_effects]` | Optional LED effect fade duration |
@@ -120,16 +120,21 @@ Speeds are mm/s; X/Y accept 1–500 and Z 0.1–50. Jog commands convert to mm/m
 
 ## Custom layout
 
-Use **Settings → Customize layout → Edit layout**. Select the category and change its order with Up/Down or optional drag mode. Save applies the order immediately (live object lists refresh on the next Moonraker poll); Cancel discards changes. Reset order resets only the selected category after saving.
+Use **Settings → Customize layout → Edit layout**. Select a menu category and tick/untick the individual sections to show/hide them. Change the order with Up/Down or optional drag mode. Save applies both immediately (live object lists refresh on the next Moonraker poll); Cancel discards changes. Reset layout restores order and visibility only for the selected category after saving. Navigation, fan ordering, temperature tile ordering and other object lists are reorder-only. Safety controls and the layout editor remain accessible.
 
 ```ini
 [layout]
 fan_order = fan_generic part_t1, fan, fan_generic aux
 print_order = ["temperatures", "fans", "motion", "overrides"]
+print_hidden = ["temperature_history"]
 temperature_order = ["heater_bed", "extruder", "extruder1"]
 ```
 
-Additional keys: `nav_order`, `dashboard_order`, `control_order`, `tools_order`, `temperatures_order`, `macros_order`, `settings_order`, `macro_order`, `preset_order`. The editor writes JSON arrays except `fan_order`, which remains comma-separated for compatibility. Empty values use default order. Unknown IDs are ignored for display; new objects are appended. Fan and temperature order is shared by the relevant pages; the Dashboard includes every detected hotend, the bed and a prioritized chamber reading, with other generic heaters filling spare slots, and Print excludes automatic fans. Safety and fault controls cannot be moved. No Klipper configuration or hardware settings are changed.
+Additional keys: `nav_order`, `dashboard_order`, `control_order`, `tools_order`, `temperatures_order`, `macros_order`, `settings_order`, `macro_order`, `preset_order`, `network_order`, `console_order`. The editor writes JSON arrays except `fan_order`, which remains comma-separated for compatibility. Empty values use default order. Each menu supports a matching JSON hidden list: `dashboard_hidden`, `print_hidden`, `control_hidden`, `tools_hidden`, `temperatures_hidden`, `macros_hidden`, `settings_hidden`, `network_hidden`, `console_hidden`. Omitted or empty lists show all sections. The Settings recovery section cannot be hidden. Unknown IDs are ignored for display; new objects are appended. Fan and temperature order is shared by the relevant pages; the Dashboard includes every detected hotend, the bed and a prioritized chamber reading, with other generic heaters filling spare slots, and Print excludes automatic fans. Safety and fault controls cannot be moved. No Klipper configuration or hardware settings are changed.
+
+## Fan percentages and touch sliders
+
+Both Print and Control display `speed / max_power * 100`, clamped to 0–100% (default max_power 1). For example a reported duty of 0.24 with max_power 0.8 is 30%. Commands use the requested fraction (M106 S0–255 or SET_FAN_SPEED SPEED=0–1); Klipper applies max_power and off_below. Tap anywhere on a fan track or drag; release sends the final value once, with no confirmation. A short pending window prevents stale poll values from snapping the slider back. Automatic fans remain read-only; Print continues to show only manual fans. Missing status is displayed as unknown, never an inferred speed. This is a percentage of the configured range, not measured RPM.
 
 ## Live heating indicators
 

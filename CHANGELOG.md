@@ -1,3 +1,9 @@
+## v0.4.12-alpha — Menu visibility and tap fan controls
+
+- Per-menu section visibility and ordering in the existing layout editor, saved independently; reset restores the selected category, cancel discards edits. The layout editor, print actions and safety/recovery access remain fixed. Add Console and Network sections to the catalog.
+- Normalize reported Klipper fan duty by configured `max_power` on Print and Control. Send requested percentages without applying the limit a second time; firmware still enforces `off_below` and `max_power`.
+- Tap anywhere on fan tracks or drag; commit once on release on both pages, block status-refresh signals, share pending state and command deduplication. Do not send with unavailable/stale printer status. No change to LED or cleaning-lock sliders.
+
 ## v0.4.11-alpha — Dashboard multi-tool temperatures
 
 - Remove the two-hotend and four-tile limits for all detected hotends, bed and prioritized chamber. Keep the compact generic-heater fallback, responsive grid and saved tile order.
