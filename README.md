@@ -6,9 +6,21 @@
 Responsive layout for small Raspberry Pi touchscreens (experimental 320 × 240 to 1024 × 600). No browser required.
 
 > [!WARNING]
-> **Early Alpha (v0.4.12)** — bugs and incomplete features are expected. Test printer controls carefully. Found an issue? **Please open a GitHub Issue!** Feedback and suggestions are welcome.
+> **Early Alpha (v0.4.15)** — bugs and incomplete features are expected. Test printer controls carefully. Found an issue? **Please open a GitHub Issue!** Feedback and suggestions are welcome.
 
-## What's new in v0.4.12 Alpha
+## What's new in v0.4.15 Alpha
+
+**Compact UI across the entire interface:** smaller navigation, quick-action bar, page/card margins and touch-control spacing. Dashboard heater tiles use three columns where sufficient width is available; all tools remain visible. Compact motion, override, fan and heater readings; paired extruder/firmware-retract settings; side-by-side file previews and details, with narrower fallbacks. LED, network, console, calibration and notification pages also use space more efficiently. The existing font/button scaling, per-menu visibility and order, Settings vertical scroll, fixed emergency stop and print safeguards are preserved. No new config keys required. Native Qt and physical touch rendering still need device validation.
+
+### Previous update: v0.4.14
+
+**Compact Settings:** strictly vertical Settings scrolling (including diagonal swipes); compact cards and form rows, wrapped checkbox labels with full-row touch targets, and paired service/startup buttons on larger screens. All previous settings and save behavior remain available. The horizontal quick-action bar and other screens keep their existing scroll behavior.
+
+### Previous update: v0.4.13
+
+**Compact print monitor:** thumbnail on the left, progress and remaining time on the right. A shared Pause/Resume slot, smaller Exclude button and Cancel form one row. Restart/Recovery remains available in Settings and on fault banners, not in the normal Print page. Babystepping places the live offset and selected increment beside Z+/Z− and Save/Reset controls. The layout editor handles native single-finger scrolling as well as emulated mouse swipes; drag-reorder mode remains explicit. No printer configuration changes required.
+
+### Previous update: v0.4.12
 
 **Menu layout and fan controls:** show/hide individual menu sections and reorder them in Settings → Customize layout → Edit layout. Safety controls and the layout editor remain accessible. Print and Control fan sliders support absolute track taps and drag, commit once on release, and normalize reported duty by Klipper's configured `max_power` without changing the command scale or firmware limits.
 

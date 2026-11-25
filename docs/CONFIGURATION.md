@@ -120,7 +120,9 @@ Speeds are mm/s; X/Y accept 1–500 and Z 0.1–50. Jog commands convert to mm/m
 
 ## Custom layout
 
-Use **Settings → Customize layout → Edit layout**. Select a menu category and tick/untick the individual sections to show/hide them. Change the order with Up/Down or optional drag mode. Save applies both immediately (live object lists refresh on the next Moonraker poll); Cancel discards changes. Reset layout restores order and visibility only for the selected category after saving. Navigation, fan ordering, temperature tile ordering and other object lists are reorder-only. Safety controls and the layout editor remain accessible.
+The Settings page scrolls vertically only. Related fields are grouped into compact rows where display space permits, with stacked action buttons on narrow screens. The quick-action bar remains horizontally scrollable. No new configuration keys are required.
+
+Use **Settings → Customize layout → Edit layout**. Select a menu category and tick/untick the individual sections to show/hide them. Scroll the list with one finger (or mouse drag in normal mode). A short tap selects an item or toggles its checkbox; swiping does not. Change the order with Up/Down or optional drag mode. Turn drag mode off to scroll again. Save applies both immediately (live object lists refresh on the next Moonraker poll); Cancel discards changes. Reset layout restores order and visibility only for the selected category after saving. Navigation, fan ordering, temperature tile ordering and other object lists are reorder-only. Safety controls and the layout editor remain accessible.
 
 ```ini
 [layout]
@@ -130,7 +132,7 @@ print_hidden = ["temperature_history"]
 temperature_order = ["heater_bed", "extruder", "extruder1"]
 ```
 
-Additional keys: `nav_order`, `dashboard_order`, `control_order`, `tools_order`, `temperatures_order`, `macros_order`, `settings_order`, `macro_order`, `preset_order`, `network_order`, `console_order`. The editor writes JSON arrays except `fan_order`, which remains comma-separated for compatibility. Empty values use default order. Each menu supports a matching JSON hidden list: `dashboard_hidden`, `print_hidden`, `control_hidden`, `tools_hidden`, `temperatures_hidden`, `macros_hidden`, `settings_hidden`, `network_hidden`, `console_hidden`. Omitted or empty lists show all sections. The Settings recovery section cannot be hidden. Unknown IDs are ignored for display; new objects are appended. Fan and temperature order is shared by the relevant pages; the Dashboard includes every detected hotend, the bed and a prioritized chamber reading, with other generic heaters filling spare slots, and Print excludes automatic fans. Safety and fault controls cannot be moved. No Klipper configuration or hardware settings are changed.
+Additional keys: `nav_order`, `dashboard_order`, `control_order`, `tools_order`, `temperatures_order`, `macros_order`, `settings_order`, `macro_order`, `preset_order`, `network_order`, `console_order`. The editor writes JSON arrays except `fan_order`, which remains comma-separated for compatibility. Empty values use default order. Each menu supports a matching JSON hidden list: `dashboard_hidden`, `print_hidden`, `control_hidden`, `tools_hidden`, `temperatures_hidden`, `macros_hidden`, `settings_hidden`, `network_hidden`, `console_hidden`. Omitted or empty lists show all sections. The Settings recovery section cannot be hidden. Unknown IDs are ignored for display; new objects are appended. Fan and temperature order is shared by the relevant pages; the Dashboard includes every detected hotend, the bed and a prioritized chamber reading, with other generic heaters filling spare slots, and Print excludes automatic fans. Safety and fault controls cannot be moved. The Print progress/actions remain fixed; the thumbnail sits beside progress and follows the existing `job_details` visibility setting, while the textual job details retain their saved order. No Klipper configuration or hardware settings are changed.
 
 ## Fan percentages and touch sliders
 
@@ -159,3 +161,7 @@ See [Multi-tool & filament management](MULTITOOL.md) for tool mapping, macro ove
 ## Per-tool filament sensors
 
 Optional `[filament_sensors]` maps T labels to exact Klipper sensor object names, e.g. `T0 = filament_switch_sensor e0_filament`. Unspecified tools use unambiguous name detection. Empty values opt out. See [multi-tool setup](MULTITOOL.md).
+
+### Compact layout (v0.4.15)
+
+All menus use reduced spacing by default. The Dashboard uses up to three temperature columns depending on usable width and font scale. Existing `[display]` `font_scale`, `button_scale` and `ui_scale` settings continue to apply; no migration is necessary. Per-menu visibility and ordering remain unchanged. Settings remains vertically locked, while the quick-action bar can scroll horizontally.

@@ -22,7 +22,7 @@ from pathlib import Path
 from functools import partial
 
 from PyQt5.QtCore import Qt, QTimer, QObject, pyqtSignal, QRect, QRectF, QPointF, QEvent, QEasingCurve, QPropertyAnimation
-from PyQt5.QtGui import QFont, QPainter, QColor, QPen, QPixmap, QLinearGradient, QBrush, QCursor, QPolygonF
+from PyQt5.QtGui import QFont, QPainter, QColor, QPen, QPixmap, QLinearGradient, QBrush, QCursor, QPolygonF, QMouseEvent
 from PyQt5.QtWidgets import (
     QApplication, QWidget, QLabel, QPushButton, QVBoxLayout, QHBoxLayout,
     QScrollArea, QFrame, QGridLayout, QStackedWidget, QComboBox, QDoubleSpinBox, QCheckBox,
@@ -664,8 +664,8 @@ def display_style(style, scale):
     out = scaled_style(style, scale * bounded_number(conf('display', 'font_scale', '1'), 1, .8, 1.5))
     factor = bounded_number(conf('display', 'button_scale', '1'), 1, .8, 1.5)
     # Preserve the emergency button minimum size. Other explicit widget sizes remain valid.
-    out += f'\nQPushButton {{ min-height: {round(25*factor)}px; padding: {round(6*factor)}px {round(9*factor)}px; }}'
-    out += f'\nQPushButton#nav {{ min-height: {round(29*factor)}px; padding: {round(9*factor)}px 7px; }}'
+    out += f'\nQPushButton {{ min-height: {round(24*factor)}px; padding: {round(4*factor)}px {round(7*factor)}px; }}'
+    out += f'\nQPushButton#nav {{ min-height: {round(26*factor)}px; padding: {round(5*factor)}px 6px; }}'
     return out
 
 
@@ -1458,6 +1458,8 @@ _ADDED_EN_DE = {
 def tr(message):
     text = str(message)
     if LANGUAGE == 'de':
+        if text in ('Exclude', 'Save later', 'Save Z', 'Reset Z'):
+            return {'Exclude': 'Ausschl.', 'Save later': 'Später', 'Save Z': 'Speichern', 'Reset Z': 'Z zurück'}[text]
         if text in ('Load', 'Unload', 'Load All', 'Unload All'):
             return {'Load': 'Laden', 'Unload': 'Entladen', 'Load All': 'Alle laden', 'Unload All': 'Alle entladen'}[text]
         if text == 'Dateien':
@@ -1503,7 +1505,7 @@ QPushButton#nav { background: #151f2d; text-align: left; border: 0; padding: 9px
 QPushButton#danger { background: #8f2029; color: #ffffff; border: 2px solid #dd4554; font-size: 16px; font-weight: 800; min-height: 44px; }
 QPushButton#danger:pressed { background: #ad2433; }
 QPushButton#nav:checked { background: #244c79; border-left: 4px solid #75c3ff; }
-QComboBox, QDoubleSpinBox, QLineEdit, QPlainTextEdit { background: #111a27; border: 1px solid #3a4c67; border-radius: 7px; padding: 7px; }
+QComboBox, QDoubleSpinBox, QLineEdit, QPlainTextEdit { background: #111a27; border: 1px solid #3a4c67; border-radius: 7px; padding: 4px; }
 QScrollArea { border: 0; background: transparent; }
 QProgressBar { border: 0; border-radius: 4px; background: #111a27; }
 QProgressBar::chunk { background: #2866bd; border-radius: 4px; }
@@ -1739,12 +1741,23 @@ def label(text, name=None):
     return l
 
 
+def touch_height(base=36):
+    """Compact touch rows; honour the existing accessibility scale."""
+    factor = bounded_number(conf('display', 'button_scale', '1'), 1, .8, 1.5)
+    return max(32, round(base * factor))
+
+
+def dashboard_tile_columns(content_width, tiny=False):
+    """Three read-only heater tiles fit a normal 800x480 landscape screen."""
+    return 1 if tiny else 3 if content_width >= 580 else 2 if content_width >= 340 else 1
+
+
 def button(text, func, primary=False):
     b = QPushButton(tr(text))
     if primary:
         b.setObjectName('primary')
     b.clicked.connect(func)
-    b.setMinimumHeight(round(40 * bounded_number(conf('display', 'button_scale', '1'), 1, .8, 1.5)))
+    b.setMinimumHeight(touch_height())
     return b
 
 
@@ -1752,8 +1765,8 @@ def card(title=None):
     frame = QFrame()
     frame.setObjectName('card')
     lay = QVBoxLayout(frame)
-    lay.setContentsMargins(9, 7, 9, 7)
-    lay.setSpacing(5)
+    lay.setContentsMargins(7, 5, 7, 5)
+    lay.setSpacing(3)
     if title:
         lay.addWidget(label(title, 'sectionTitle'))
     return frame, lay
@@ -1761,7 +1774,7 @@ def card(title=None):
 
 def row(*widgets):
     lay = QHBoxLayout()
-    lay.setSpacing(8)
+    lay.setSpacing(5)
     for w in widgets:
         if isinstance(w, QHBoxLayout):
             lay.addLayout(w)
@@ -1796,6 +1809,64 @@ class FingerScrollArea(QScrollArea):
         props.setScrollMetric(QScrollerProperties.HorizontalOvershootPolicy,
                               QScrollerProperties.OvershootAlwaysOff)
         scroller.setScrollerProperties(props)
+
+
+class SettingsScrollArea(FingerScrollArea):
+    """A vertically scrolling form, not a two-dimensional canvas."""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.horizontalScrollBar().valueChanged.connect(self._lock_horizontal)
+        # Diagonal swipes retain their vertical component, while kinetic scrolling
+        # receives a strictly one-dimensional content range.
+        self._lock_horizontal(0)
+
+    def _lock_horizontal(self, value):
+        if value:
+            self.horizontalScrollBar().setValue(0)
+
+    def viewportEvent(self, event):
+        kind = event.type()
+        if kind == QEvent.ScrollPrepare:
+            super().viewportEvent(event)
+            bounds = event.contentPosRange()
+            event.setContentPosRange(QRectF(0, bounds.y(), 0, bounds.height()))
+            event.setContentPos(QPointF(0, self.verticalScrollBar().value()))
+            event.accept()
+            return True
+        if kind == QEvent.Scroll:
+            self.verticalScrollBar().setValue(round(event.contentPos().y()))
+            self._lock_horizontal(self.horizontalScrollBar().value())
+            event.accept()
+            return True
+        return super().viewportEvent(event)
+
+
+def settings_field(layout, title, widget, stacked=False):
+    """Fit labels and values side by side; stack on the smallest screens."""
+    caption = label(title)
+    caption.setMinimumWidth(0)
+    if stacked:
+        layout.addWidget(caption)
+        layout.addWidget(widget)
+    else:
+        line = QHBoxLayout()
+        line.setSpacing(6)
+        line.addWidget(caption, 3)
+        widget.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
+        line.addWidget(widget, 2)
+        layout.addLayout(line)
+
+
+def settings_actions(layout, widgets, stacked=False):
+    if stacked:
+        for widget in widgets:
+            layout.addWidget(widget)
+    else:
+        line = QHBoxLayout()
+        line.setSpacing(5)
+        for widget in widgets:
+            line.addWidget(widget, 1)
+        layout.addLayout(line)
 
 
 class TapFanSlider(QSlider):
@@ -1917,7 +1988,7 @@ class TouchSpinBox(QDoubleSpinBox):
         super().__init__(*args, **kwargs)
         self.setButtonSymbols(QDoubleSpinBox.NoButtons)
         self.setReadOnly(True)
-        self.setMinimumHeight(42)
+        self.setMinimumHeight(touch_height())
         self.lineEdit().installEventFilter(self)
 
     def eventFilter(self,obj,event):
@@ -2071,7 +2142,7 @@ class MeshHeatmap(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.matrix = []
-        self.setMinimumHeight(245)
+        self.setMinimumHeight(200)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
 
     def set_matrix(self, matrix):
@@ -2296,7 +2367,8 @@ class TouchCheckBox(QCheckBox):
             foreground.setAlpha(110)
             edge.setAlpha(105)
             accent.setAlpha(110)
-        side = 24
+        compact = getattr(self, 'compact_settings', False)
+        side = 22 if compact else 24
         left = 4
         top = (self.height() - side) // 2
         rect = QRect(left, top, side, side)
@@ -2313,8 +2385,39 @@ class TouchCheckBox(QCheckBox):
         p.setFont(self.font())
         p.drawText(QRect(left + side + 12, 0,
                          max(0, self.width() - left - side - 12), self.height()),
-                   Qt.AlignLeft | Qt.AlignVCenter, self.text())
+                   Qt.AlignLeft | Qt.AlignVCenter | (Qt.TextWordWrap if compact else 0), self.text())
         p.end()
+
+
+class SettingsCheckBox(TouchCheckBox):
+    compact_settings = True
+
+    def __init__(self, text='', parent=None):
+        super().__init__(text, parent)
+        self.setMinimumHeight(34)
+        policy = QSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
+        policy.setHeightForWidth(True)
+        self.setSizePolicy(policy)
+
+    def minimumSizeHint(self):
+        hint = super().minimumSizeHint()
+        hint.setWidth(48)
+        hint.setHeight(34)
+        return hint
+
+    def sizeHint(self):
+        hint = super().sizeHint()
+        hint.setWidth(min(hint.width(), 200))
+        hint.setHeight(self.heightForWidth(hint.width()))
+        return hint
+
+    def heightForWidth(self, width):
+        rect = self.fontMetrics().boundingRect(QRect(0, 0, max(1, width - 38), 10000),
+                                               Qt.TextWordWrap, self.text())
+        return max(self.minimumHeight(), rect.height() + 8)
+
+    def hitButton(self, pos):
+        return self.rect().contains(pos)
 
 
 class TemperaturePresetEditor(QDialog):
@@ -2737,6 +2840,53 @@ class WifiSignals(QObject):
 class LayoutOrderList(QListWidget):
     order_changed = pyqtSignal()
 
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.native_scroll = True
+        self._finger_origin = None
+        self._finger_scrolled = False
+        self._finger_scroll_start = 0
+
+    def viewportEvent(self, event):
+        # Qt's TouchGesture requires two fingers on some touch devices. Handle
+        # native single-touch explicitly and keep LeftMouseButtonGesture for
+        # X11 devices that deliver emulated mouse events instead.
+        kind = event.type()
+        if not getattr(self, 'native_scroll', False) or kind not in (QEvent.TouchBegin, QEvent.TouchUpdate,
+                                                   QEvent.TouchEnd, QEvent.TouchCancel):
+            return super().viewportEvent(event)
+        if kind == QEvent.TouchCancel:
+            self._finger_origin = None
+        else:
+            points = event.touchPoints()
+            if len(points) != 1:
+                self._finger_origin = None
+            else:
+                pos = points[0].pos()
+                if kind == QEvent.TouchBegin:
+                    QScroller.scroller(self.viewport()).stop()
+                    self._finger_origin = pos
+                    self._finger_scroll_start = self.verticalScrollBar().value()
+                    self._finger_scrolled = False
+                elif self._finger_origin is not None:
+                    delta = pos.y() - self._finger_origin.y()
+                    if max(abs(delta), abs(pos.x() - self._finger_origin.x())) >= QApplication.startDragDistance():
+                        self._finger_scrolled = True
+                    if self._finger_scrolled:
+                        self.verticalScrollBar().setValue(self._finger_scroll_start - round(delta))
+                    if kind == QEvent.TouchEnd:
+                        # Forward a genuine short tap to the normal list-item
+                        # handler, including the checkbox hit test. A scroll
+                        # must never toggle a checkbox or reorder an item.
+                        if not self._finger_scrolled:
+                            self.mousePressEvent(QMouseEvent(QEvent.MouseButtonPress, pos,
+                                Qt.LeftButton, Qt.LeftButton, Qt.NoModifier))
+                            self.mouseReleaseEvent(QMouseEvent(QEvent.MouseButtonRelease, pos,
+                                Qt.LeftButton, Qt.NoButton, Qt.NoModifier))
+                        self._finger_origin = None
+        event.accept()
+        return True
+
     def dropEvent(self, event):
         # Qt 5 can implement an internal move as insert/remove, not rowsMoved.
         super().dropEvent(event)
@@ -2812,9 +2962,18 @@ class LayoutEditor(QDialog):
         self.items.setDragEnabled(enabled)
         self.items.setAcceptDrops(enabled)
         self.items.setDropIndicatorShown(enabled)
+        self.items.native_scroll = not enabled
+        self.items._finger_origin = None
+        viewport.setAttribute(Qt.WA_AcceptTouchEvents, not enabled)
         if not enabled:
-            viewport.setAttribute(Qt.WA_AcceptTouchEvents, True)
             QScroller.grabGesture(viewport, QScroller.LeftMouseButtonGesture)
+            viewport.setAttribute(Qt.WA_AcceptTouchEvents, True)
+            scroller = QScroller.scroller(viewport)
+            props = scroller.scrollerProperties()
+            props.setScrollMetric(QScrollerProperties.DragStartDistance, 0.004)
+            props.setScrollMetric(QScrollerProperties.VerticalOvershootPolicy,
+                                  QScrollerProperties.OvershootAlwaysOff)
+            scroller.setScrollerProperties(props)
 
     def load_category(self, *_):
         self.key = self.category.currentData()
@@ -2882,7 +3041,7 @@ class TemperatureHistory(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.samples = deque(maxlen=180)
-        self.setMinimumHeight(105)
+        self.setMinimumHeight(88)
         self.last_sample = 0
         self.colors = ('#ff8e85', '#75c3ff', '#f4c36c')
 
@@ -3052,6 +3211,8 @@ class Screen(QWidget):
         screen_height = available.height() if available is not None else 480
         self.compact, self.tiny, self.ui_scale = display_profile(
             screen_width, screen_height, conf('display', 'ui_scale', 'auto'))
+        self.sidebar_width = min(round(screen_width * .30), round((166 if screen_width >= 1024 else 152) * max(1, self.ui_scale * bounded_number(conf('display', 'font_scale', '1'), 1, .8, 1.5))))
+        self.content_width = screen_width if self.compact else screen_width - self.sidebar_width
         self.setStyleSheet(display_style(STYLE, self.ui_scale))
         self.resize(screen_width, screen_height)
         self.s = {}
@@ -3214,10 +3375,10 @@ class Screen(QWidget):
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(0)
         sidebar = QFrame()
-        sidebar.setFixedWidth(142 if self.compact else 184 if not self.tiny else 142)
+        sidebar.setFixedWidth(self.sidebar_width)
         sidebar.setObjectName('veloxSidebar')
         sl = QVBoxLayout(sidebar)
-        sl.setContentsMargins(5, 7, 5, 7)
+        sl.setContentsMargins(4, 5, 4, 5)
         brand = label('VeloxScreen', 'brand')
         brand.setWordWrap(False)
         sl.addWidget(brand)
@@ -3235,7 +3396,7 @@ class Screen(QWidget):
         nav_panel.setObjectName('veloxNavPanel')
         nav_layout = QVBoxLayout(nav_panel)
         nav_layout.setContentsMargins(0, 0, 1, 0)
-        nav_layout.setSpacing(3)
+        nav_layout.setSpacing(2)
         nav_scroll.setWidget(nav_panel)
         sl.addWidget(nav_scroll, 1)
         self.stack = QStackedWidget()
@@ -3259,13 +3420,14 @@ class Screen(QWidget):
             nav = QPushButton(tr(name))
             nav.setObjectName('nav')
             nav.setCheckable(True)
+            nav.setMinimumHeight(touch_height())
             nav.clicked.connect(partial(self.navigate, name))
             nav_layout.addWidget(nav)
             self.nav_buttons[name] = nav
             self.pages[name] = self._page(name, builder)
             self.stack.addWidget(self.pages[name])
         nav_layout.addStretch()
-        sl.addWidget(label('v0.4.12 alpha', 'caption'))
+        sl.addWidget(label('v0.4.15 alpha', 'caption'))
         # IMPORTANT: Qt otherwise deletes self.connection and all nav buttons.
         outer.addWidget(sidebar)
         sidebar.setVisible(not self.compact)
@@ -3285,7 +3447,7 @@ class Screen(QWidget):
         self.quick_bar = FingerScrollArea()
         self.quick_bar.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.quick_bar.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        self.quick_bar.setFixedHeight(round((38 if self.tiny else 52) * max(1.0, bounded_number(conf('display', 'button_scale', '1'), 1, .8, 1.5))))
+        self.quick_bar.setFixedHeight(max(38, touch_height(36) + 6))
         self.quick_panel = QWidget()
         self.quick_panel.setObjectName('veloxQuickPanel')
         self.quick_layout = QHBoxLayout(self.quick_panel)
@@ -3298,7 +3460,7 @@ class Screen(QWidget):
         # Dashboard and Print, outside all scrolling/reorderable controls.
         self.safety_header = QWidget()
         safety_header_layout = QHBoxLayout(self.safety_header)
-        safety_header_layout.setContentsMargins(9, 5, 9, 3)
+        safety_header_layout.setContentsMargins(6, 3, 6, 2)
         safety_header_layout.setSpacing(6)
         self.safety_header_title = label('Dashboard', 'title')
         safety_header_layout.addWidget(self.safety_header_title, 1)
@@ -3317,14 +3479,14 @@ class Screen(QWidget):
             holder = QWidget()
             inner = QVBoxLayout(holder)
             inner.setContentsMargins(0, 0, 0, 0)
-            inner.setSpacing(7)
+            inner.setSpacing(4)
             parent_layout.addWidget(holder)
             self.layout_groups[page] = (inner, {})
         inner, blocks = self.layout_groups[page]
         frame = QWidget()
         content = QVBoxLayout(frame)
         content.setContentsMargins(0, 0, 0, 0)
-        content.setSpacing(7)
+        content.setSpacing(4)
         inner.addWidget(frame)
         blocks[key] = (frame, title)
         return content
@@ -3338,6 +3500,11 @@ class Screen(QWidget):
                 layout.removeWidget(widget)
                 layout.addWidget(widget)
                 widget.setVisible(section_visible(key, ident, hidden))
+        # Preview shares the fixed progress card, but retains the existing
+        # Print details / Preview visibility setting.
+        if hasattr(self, 'print_thumb'):
+            self.print_thumb.setVisible(section_visible('print_order', 'job_details',
+                                                        read_layout_order('print_hidden')))
         active = next((name for name, page in self.pages.items()
                        if page is self.stack.currentWidget()), 'Dashboard')
         self.nav_order = ordered_items(self.nav_defaults, read_layout_order('nav_order'))
@@ -3413,18 +3580,52 @@ class Screen(QWidget):
         # Dynamic temperature and fan views compare ordered signatures on the next poll.
 
     def _page(self, name, builder):
-        scroll = FingerScrollArea()
+        settings = name == 'Einstellungen'
+        scroll = SettingsScrollArea() if settings else FingerScrollArea()
         container = QWidget()
         container.setObjectName('veloxPage')
         content = QVBoxLayout(container)
-        content.setContentsMargins(9, 7, 9, 9)
-        content.setSpacing(7)
+        content.setContentsMargins(6, 4, 6, 5)
+        content.setSpacing(4)
         if name not in ('Dashboard', 'Print'):
             content.addWidget(label(name, 'title'))
         builder(content)
+        if settings:
+            self.compact_settings_widgets(container)
         content.addStretch()
         scroll.setWidget(container)
         return scroll
+
+    def compact_settings_widgets(self, container):
+        """Tighten only Settings; retain readable text and full-row touch targets."""
+        factor = bounded_number(conf('display', 'button_scale', '1'), 1, .8, 1.5)
+        height = max(32, round(34 * factor))
+        # This local QSS wins over the inherited global button padding only.
+        container.setStyleSheet('QPushButton { min-height: 22px; padding: 3px 6px; } '
+                                'QComboBox, QDoubleSpinBox { padding: 3px 5px; } '
+                                'QDoubleSpinBox QLineEdit { padding: 0; }')
+        for frame in container.findChildren(QFrame):
+            if frame.objectName() == 'card' and frame.layout() is not None:
+                frame.layout().setContentsMargins(7, 5, 7, 5)
+                frame.layout().setSpacing(4)
+        for widget in container.findChildren(QPushButton):
+            widget.setMinimumHeight(height)
+        for widget in container.findChildren(QComboBox):
+            widget.setMinimumHeight(height)
+            widget.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
+            widget.setMinimumContentsLength(6)
+        for widget in container.findChildren(TouchSpinBox):
+            widget.setMinimumHeight(height)
+        for widget in container.findChildren(SettingsCheckBox):
+            widget.setMinimumHeight(height)
+        for widget in container.findChildren(QLabel):
+            # Paths and translated captions should not enlarge the scrollable width.
+            if widget.wordWrap():
+                widget.setMinimumWidth(0)
+                policy = widget.sizePolicy()
+                policy.setHorizontalPolicy(QSizePolicy.Ignored)
+                policy.setHeightForWidth(True)
+                widget.setSizePolicy(policy)
 
     def navigate(self, name):
         self.stack.setCurrentWidget(self.pages[name])
@@ -3529,15 +3730,15 @@ class Screen(QWidget):
             ('flow', 'M221', (-5, -1, 0, 1, 5)),
         ):
             title = 'Speed override (M220)' if which == 'speed' else 'Flow override (M221)'
-            frame, content = card(title)
-            content.setContentsMargins(7, 7, 7, 8)
+            frame, content = card()
+            content.setContentsMargins(6, 4, 6, 4)
             content.setSpacing(4)
             value = ClickableMetric('-- %')
             value.setObjectName('metric')
             value.setCursor(Qt.PointingHandCursor)
             value.setToolTip(tr('Tap percentage to enter exact value'))
             value.clicked.connect(partial(self.set_override_exact, which))
-            content.addWidget(value, 0, Qt.AlignCenter)
+            content.addLayout(row(label(title, 'sectionTitle'), value))
             self.override_labels[which].append(value)
             step_buttons = QHBoxLayout()
             step_buttons.setSpacing(3)
@@ -3545,7 +3746,7 @@ class Screen(QWidget):
                 caption = '100%' if step == 0 else f'{step:+d}'
                 callback = partial(self.change_override, which, step)
                 b = button(caption, callback, primary=(step == 0))
-                b.setMinimumHeight(38)
+                b.setMinimumHeight(touch_height())
                 b.setMinimumWidth(0)
                 b.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
                 b.setEnabled(False)
@@ -3736,59 +3937,71 @@ class Screen(QWidget):
         self.print_status_label.setWordWrap(True)
         c.addWidget(self.print_status_label)
         self.print_status_label.setTextFormat(Qt.PlainText)
+        overview = QHBoxLayout()
+        overview.setSpacing(6)
+        self.print_thumb = QLabel(tr('No preview'))
+        self.print_thumb.setAlignment(Qt.AlignCenter)
+        self.print_thumb.setWordWrap(True)
+        self.print_thumb.setMinimumHeight(48)
+        self.print_thumb.setMaximumSize(84 if self.tiny else 124, 76 if self.tiny else 104)
+        self.print_thumb.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        self.print_thumb.setTextFormat(Qt.PlainText)
+        overview.addWidget(self.print_thumb, 1)
+        progress = QVBoxLayout()
+        progress.setSpacing(3)
         self.print_progress_label = label('-- %', 'metricSmall' if self.tiny else 'metric')
         self.print_progress_label.setAlignment(Qt.AlignCenter)
-        c.addWidget(self.print_progress_label)
+        progress.addWidget(self.print_progress_label)
         self.print_progress_bar = QProgressBar()
         self.print_progress_bar.setRange(0, 1000)
         self.print_progress_bar.setTextVisible(False)
         self.print_progress_bar.setFixedHeight(9)
-        c.addWidget(self.print_progress_bar)
+        progress.addWidget(self.print_progress_bar)
+        self.remaining_label = label('—', 'etaValueSmall')
+        self.eta_label = label('—', 'metricSmall' if self.tiny else 'metric')
         times = QHBoxLayout()
-        self.remaining_label = label('—', 'etaValueSmall' if self.tiny else 'etaValue')
-        self.eta_label = label('—', 'etaValueSmall' if self.tiny else 'etaValue')
+        times.setSpacing(4)
         for title, widget in (('TIME REMAINING', self.remaining_label), ('FINISH AT · EST.', self.eta_label)):
-            panel, box = card()
-            if self.tiny:
-                box.setContentsMargins(4, 4, 4, 4)
-                box.setSpacing(2)
+            box = QVBoxLayout()
+            box.setSpacing(1)
             caption = label(title, 'caption')
             caption.setAlignment(Qt.AlignCenter)
             box.addWidget(caption)
             widget.setAlignment(Qt.AlignCenter)
             box.addWidget(widget)
-            times.addWidget(panel)
-        c.addLayout(times)
+            times.addLayout(box, 1)
+        progress.addLayout(times)
+        overview.addLayout(progress, 2)
+        c.addLayout(overview)
         self.print_estimate_info = label('Waiting for print data', 'caption')
         c.addWidget(self.print_estimate_info)
         l.addWidget(f)
 
         actions = QHBoxLayout()
+        actions.setSpacing(5)
         self.print_actions = {}
+        self.pause_resume_slot = QStackedWidget()
+        self.pause_resume_slot.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         for name in ('pause', 'resume', 'cancel'):
             b = button(name.capitalize(), partial(self.request_print_action, name))
             b.setEnabled(False)
             self.print_actions[name] = b
-            actions.addWidget(b)
+            if name != 'cancel':
+                self.pause_resume_slot.addWidget(b)
+        self.pause_resume_slot.setCurrentWidget(self.print_actions['pause'])
+        self.exclude_button = button('Exclude', self.open_exclude_objects)
+        self.exclude_button.setEnabled(False)
+        self.exclude_button.setToolTip(tr('Exclude Object'))
+        actions.addWidget(self.pause_resume_slot, 2)
+        actions.addWidget(self.exclude_button, 1)
+        actions.addWidget(self.print_actions['cancel'], 2)
         l.addLayout(actions)
         self.print_action_status = label('', 'caption')
         l.addWidget(self.print_action_status)
-        l.addWidget(button('Restart / Recovery options', self.open_recovery_menu))
-        self.exclude_button = button('Exclude Object', self.open_exclude_objects)
-        self.exclude_button.setEnabled(False)
-        self.exclude_hint = label('Object exclusion requires [exclude_object] and object-marked G-code.', 'caption')
-        l.addWidget(self.exclude_button)
-        l.addWidget(self.exclude_hint)
 
         root = l
         l = self.layout_block('print_order', root, 'job_details', 'Print details / Preview')
         f, c = card('Print details')
-        self.print_thumb = QLabel(tr('No preview'))
-        self.print_thumb.setAlignment(Qt.AlignCenter)
-        self.print_thumb.setMinimumHeight(65)
-        self.print_thumb.setMaximumHeight(120 if self.tiny else 160)
-        self.print_thumb.setTextFormat(Qt.PlainText)
-        c.addWidget(self.print_thumb)
         self.print_details = label('Layer — · Filament — · Active tool —', 'readout')
         self.print_details.setTextFormat(Qt.PlainText)
         c.addWidget(self.print_details)
@@ -3803,8 +4016,7 @@ class Screen(QWidget):
             f, c = card(title)
             value = label('--', 'metric')
             self.print_metrics[key] = value
-            c.addWidget(value)
-            c.addWidget(label(unit, 'caption'))
+            c.addLayout(row(value, label(unit, 'caption')))
             cols = 1 if self.tiny else 2 if self.compact else 3
             grid.addWidget(f, index // cols, index % cols)
         l.addLayout(grid)
@@ -3814,7 +4026,7 @@ class Screen(QWidget):
         self.print_temp_info = label('Waiting for heater data...', 'caption')
         c.addWidget(self.print_temp_info)
         self.print_temp_grid = QGridLayout()
-        self.print_temp_grid.setSpacing(5)
+        self.print_temp_grid.setSpacing(4)
         c.addLayout(self.print_temp_grid)
         self.print_temp_widgets = {}
         self._print_temp_signature = None
@@ -3828,34 +4040,46 @@ class Screen(QWidget):
         l = self.layout_block('print_order', root, 'fans', 'Fans')
         f, c = card('Fans  ·  live control')
         self.print_fan_area = QVBoxLayout()
-        self.print_fan_area.setSpacing(7)
+        self.print_fan_area.setSpacing(4)
         c.addLayout(self.print_fan_area)
         l.addWidget(f)
         l.addWidget(label('Manual fans only. Automatic fans are hidden on this page.', 'caption'))
         l = self.layout_block('print_order', root, 'babystep', 'Live Z offset')
         f, c = card('Live Z offset · Babystepping')
-        self.print_z_offset = label('Z offset: —', 'metric')
-        c.addWidget(self.print_z_offset)
+        z_layout = QHBoxLayout()
+        z_layout.setSpacing(6)
+        z_info = QVBoxLayout()
+        z_info.setSpacing(3)
+        self.print_z_offset = label('Z offset: —', 'metricSmall' if self.tiny else 'metric')
+        z_info.addWidget(self.print_z_offset)
         self.z_buttons = []
+        z_info.addWidget(label('Step · mm', 'caption'))
         self.z_step_combo = QComboBox()
         for step in Z_STEPS:
             self.z_step_combo.addItem(f'{step:.3f} mm', step)
         self.z_step_combo.setCurrentIndex(1)
         self.z_step_combo.currentIndexChanged.connect(lambda _: setattr(self, '_z_step', float(self.z_step_combo.currentData())))
-        c.addWidget(self.z_step_combo)
-        bar = QHBoxLayout()
-        for sign, title in ((-1, 'Z −'), (1, 'Z +')):
+        z_info.addWidget(self.z_step_combo)
+        z_layout.addLayout(z_info, 1)
+        z_actions = QGridLayout()
+        z_actions.setSpacing(4)
+        for col, (sign, title) in enumerate(((1, 'Z +'), (-1, 'Z −'))):
             b = button(title, lambda checked=False, sign=sign: self.adjust_print_z(sign * self._z_step))
             self.z_buttons.append(b)
             b.setEnabled(False)
-            bar.addWidget(b)
-        c.addLayout(bar)
-        self.z_reset_button = button('Reset live Z to 0', self.reset_live_z)
-        self.z_save_button = button('Save Z offset', self.request_z_save)
-        self.z_cancel_button = button('Cancel save reminder', self.cancel_z_reminder)
-        for b in (self.z_reset_button, self.z_save_button, self.z_cancel_button):
+            z_actions.addWidget(b, 0, col)
+        self.z_save_button = button('Save Z', self.request_z_save)
+        self.z_reset_button = button('Reset Z', self.reset_live_z)
+        self.z_save_button.setToolTip(tr('Save Z offset'))
+        self.z_reset_button.setToolTip(tr('Reset live Z to 0'))
+        for col, b in enumerate((self.z_save_button, self.z_reset_button)):
             b.setEnabled(False)
-            c.addWidget(b)
+            z_actions.addWidget(b, 1, col)
+        z_layout.addLayout(z_actions, 1)
+        c.addLayout(z_layout)
+        self.z_cancel_button = button('Cancel save reminder', self.cancel_z_reminder)
+        self.z_cancel_button.setEnabled(False)
+        c.addWidget(self.z_cancel_button)
         self.z_cancel_button.hide()
         self.z_save_hint = label('', 'caption')
         self.z_save_hint.setWordWrap(True)
@@ -4023,9 +4247,10 @@ class Screen(QWidget):
                 if item.widget() is not None:
                     item.widget().deleteLater()
             for name in fans:
-                frame, content = card(name)
+                frame, content = card()
                 info = label('-- %', 'readout')
-                content.addWidget(info)
+                info.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+                content.addLayout(row(label(name, 'sectionTitle'), info))
                 slider = None
                 if name == 'fan' or name.startswith('fan_generic '):
                     slider = TapFanSlider(Qt.Horizontal)
@@ -4074,8 +4299,7 @@ class Screen(QWidget):
             else:
                 val = label('--', 'metric')
             self.s[key] = val
-            c.addWidget(val)
-            c.addWidget(label(unit, 'caption'))
+            c.addLayout(row(val, label(unit, 'caption')))
             grid.addWidget(f, i // (1 if self.tiny else 2 if self.compact else 3),
                            i % (1 if self.tiny else 2 if self.compact else 3))
         l.addLayout(grid)
@@ -4109,7 +4333,7 @@ class Screen(QWidget):
         l = self.layout_block('dashboard_order', root, 'temperatures', 'Temperatures')
         f, c = card('Temperaturen  ·  Übersicht')
         self.dash_temp_grid = QGridLayout()
-        self.dash_temp_grid.setSpacing(6)
+        self.dash_temp_grid.setSpacing(4)
         c.addLayout(self.dash_temp_grid)
         self.dash_temp_widgets = {}
         self._dash_temp_signature = None
@@ -4120,7 +4344,7 @@ class Screen(QWidget):
         l = self.layout_block('dashboard_order', root, 'presets', 'Temperature presets')
         f, c = card('Temperature presets')
         self.dashboard_presets = QGridLayout()
-        self.dashboard_presets.setSpacing(6)
+        self.dashboard_presets.setSpacing(4)
         c.addLayout(self.dashboard_presets)
         c.addWidget(button('Edit presets', self.edit_presets))
         c.addWidget(label('Hotend presets use the currently selected tool; bed and chamber are independent.', 'caption'))
@@ -4167,29 +4391,37 @@ class Screen(QWidget):
         c.addWidget(self.selected_heating_status)
         self.s['tool_info'] = label('Extruder wird erkannt ...')
         c.addWidget(self.s['tool_info'])
-        c.addWidget(label('Pressure Advance', 'caption'))
         self.pa_spin = TouchSpinBox()
         self.pa_spin.setProperty('touch_title', 'Pressure Advance')
         self.pa_spin.setDecimals(4)
         self.pa_spin.setSingleStep(.005)
         self.pa_spin.setRange(0, 1)
         self.pa_apply_button = button('Übernehmen', self.apply_pa, True)
-        c.addLayout(row(self.pa_spin, self.pa_apply_button))
+        if self.tiny:
+            c.addWidget(label('Pressure Advance', 'caption'))
+            c.addLayout(row(self.pa_spin, self.pa_apply_button))
+        else:
+            c.addLayout(row(label('Pressure Advance', 'caption'), self.pa_spin, self.pa_apply_button))
         l.addWidget(f)
         l = self.layout_block('tools_order', root, 'retract', 'Firmware Retract')
         f, c = card('Firmware Retract')
         self.retract_spins = {}
-        for title, key, maximum in [('Länge (mm)', 'retract_length', 100),
+        retract_grid = QGridLayout()
+        retract_grid.setSpacing(4)
+        retract_columns = 2 if self.content_width >= 580 else 1
+        for index, (title, key, maximum) in enumerate([('Länge (mm)', 'retract_length', 100),
                                      ('Speed (mm/s)', 'retract_speed', 100),
                                      ('Extra (mm)', 'unretract_extra_length', 100),
-                                     ('Unretract Speed', 'unretract_speed', 100)]:
+                                     ('Unretract Speed', 'unretract_speed', 100)]):
             spin = TouchSpinBox()
             spin.setProperty('touch_title', title)
             spin.setRange(0, maximum)
             spin.setDecimals(2)
             spin.setSingleStep(.1)
             self.retract_spins[key] = spin
-            c.addLayout(row(label(title), spin))
+            field = row(label(title, 'caption'), spin)
+            retract_grid.addLayout(field, index // retract_columns, index % retract_columns)
+        c.addLayout(retract_grid)
         c.addLayout(row(button('Übernehmen', self.apply_retract, True),
                         button('Reset', self.reset_retract)))
         l.addWidget(f)
@@ -4231,14 +4463,14 @@ class Screen(QWidget):
         self.temp_info = label('Verbindung zu Moonraker wird hergestellt ...')
         self.temp_content.addWidget(self.temp_info)
         self.temperature_grid = QGridLayout()
-        self.temperature_grid.setSpacing(7)
+        self.temperature_grid.setSpacing(4)
         self.temp_content.addLayout(self.temperature_grid)
         self.temp_widgets = {}
         l.addWidget(self.temp_box)
         l = self.layout_block('temperatures_order', root, 'presets', 'Temperature presets')
         f, c = card('Temperatur-Presets  ·  veloxscreen.conf')
         self.temp_preset_grid = QGridLayout()
-        self.temp_preset_grid.setSpacing(7)
+        self.temp_preset_grid.setSpacing(4)
         c.addLayout(self.temp_preset_grid)
         c.addWidget(button('Edit presets', self.edit_presets))
         c.addWidget(label('Presets beziehen sich auf das gewählte Tool, Heizbett und ggf. Kammerheizer.', 'caption'))
@@ -4252,7 +4484,7 @@ class Screen(QWidget):
         f, c = card('Toolhead')
         c.addWidget(label('G-code position · mm', 'caption'))
         positions = QGridLayout()
-        positions.setSpacing(5)
+        positions.setSpacing(3)
         self.toolhead_position_labels = {}
         for i, axis in enumerate('XYZ'):
             tile = QVBoxLayout()
@@ -4318,7 +4550,7 @@ class Screen(QWidget):
         add_action('Home XY', 'G28 X Y', 2, 0, 3)
         add_action('Z-Tilt', 'Z_TILT_ADJUST', 3, 0, 3, 'xyz', 'z_tilt')
         add_action('QGL', 'QUAD_GANTRY_LEVEL', 4, 0, 3, 'xyz', 'quad_gantry_level')
-        controls = QVBoxLayout() if self.tiny or self.width() < 620 else QHBoxLayout()
+        controls = QVBoxLayout() if self.content_width < 540 else QHBoxLayout()
         controls.setSpacing(7)
         controls.addLayout(movement, 1)
         controls.addLayout(homing, 1)
@@ -4347,19 +4579,22 @@ class Screen(QWidget):
     def make_led_effects(self, l):
         f, c = card('LED Effects · klipper-led_effect')
         c.addWidget(label('Effects are discovered automatically from Klipper. Active state is live.', 'caption'))
-        c.addWidget(label('Fade duration', 'caption'))
         self.led_fade = QComboBox()
         self.led_fade.addItems(['0', '0.5', '1', '2', '3'])
         desired = conf('led_effects', 'fade_seconds', '0.5').strip()
         index = self.led_fade.findText(desired)
         self.led_fade.setCurrentIndex(index if index >= 0 else 1)
         self.led_fade.currentTextChanged.connect(lambda v: set_config('led_effects', 'fade_seconds', v))
-        c.addWidget(self.led_fade)
-        c.addWidget(button('Stop all effects', self.stop_all_led_effects))
+        if self.tiny:
+            c.addLayout(row(label('Fade duration', 'caption'), self.led_fade))
+            c.addWidget(button('Stop all effects', self.stop_all_led_effects))
+        else:
+            c.addLayout(row(label('Fade duration', 'caption'), self.led_fade,
+                            button('Stop all effects', self.stop_all_led_effects)))
         self.led_status_label = label('Waiting for Klipper LED effects ...', 'caption')
         c.addWidget(self.led_status_label)
         self.led_area = QVBoxLayout()
-        self.led_area.setSpacing(7)
+        self.led_area.setSpacing(4)
         c.addLayout(self.led_area)
         l.addWidget(f)
 
@@ -4367,10 +4602,9 @@ class Screen(QWidget):
         f, c = card('Print Files')
         self.files_status = label('Refresh to load G-code files.', 'caption')
         self.files_status.setTextFormat(Qt.PlainText)
-        c.addWidget(self.files_status)
-        c.addWidget(button('Refresh files', self.reload_print_files))
+        c.addLayout(row(self.files_status, button('Refresh files', self.reload_print_files)))
         self.file_grid = QGridLayout()
-        self.file_grid.setSpacing(6)
+        self.file_grid.setSpacing(4)
         self.file_prev = button('Previous page', partial(self.change_file_page, -1))
         self.file_next = button('Next page', partial(self.change_file_page, 1))
         self.file_page_label = label('—', 'caption')
@@ -4407,7 +4641,7 @@ class Screen(QWidget):
         self.file_page_label.setText(f'{self._file_page+1} / {pages}')
         self.file_prev.setEnabled(self._file_page > 0)
         self.file_next.setEnabled(self._file_page+1 < pages)
-        cols = 1 if self.tiny else 2
+        cols = 1 if self.content_width < 520 else 2
         entries = self._file_entries[self._file_page*6:self._file_page*6+6]
         for i, entry in enumerate(entries):
             filename = entry['path']
@@ -4415,23 +4649,37 @@ class Screen(QWidget):
             panel.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
             image = label('Loading preview…', 'caption')
             image.setAlignment(Qt.AlignCenter)
-            image.setFixedHeight(88 if self.tiny else 120)
+            image.setFixedHeight(72 if self.tiny else 84)
             image.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
-            c.addWidget(image)
+            if self.tiny:
+                c.addWidget(image)
+                info = c
+            else:
+                image.setMaximumWidth(92)
+                file_row = QHBoxLayout()
+                file_row.setSpacing(5)
+                file_row.addWidget(image, 1, Qt.AlignVCenter)
+                info = QVBoxLayout()
+                info.setSpacing(3)
+                file_row.addLayout(info, 2)
+                c.addLayout(file_row)
             name = label('', 'readout')
             name.setTextFormat(Qt.PlainText)
             name.setText(posixpath.basename(filename))
             name.setToolTip(filename)
-            c.addWidget(name)
+            name.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+            info.addWidget(name)
             folder = label('', 'caption')
             folder.setTextFormat(Qt.PlainText)
             folder.setText(posixpath.dirname(filename))
+            folder.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+            folder.setToolTip(filename)
             if posixpath.dirname(filename):
-                c.addWidget(folder)
+                info.addWidget(folder)
             details = label('Estimated time: —', 'caption')
-            c.addWidget(details)
+            info.addWidget(details)
             start = button('Start print', partial(self.print_selected, filename), True)
-            c.addWidget(start)
+            info.addWidget(start)
             self._file_cards[filename] = (image, details, start)
             self.file_grid.addWidget(panel, i//cols, i%cols)
         self.update_file_controls(self._live_status)
@@ -4444,7 +4692,7 @@ class Screen(QWidget):
         image, details, _ = self._file_cards[filename]
         pix = QPixmap()
         if thumbnail and pix.loadFromData(thumbnail) and pix.width() <= 4096 and pix.height() <= 4096:
-            image.setPixmap(pix.scaled(180 if self.tiny else 220, image.height(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
+            image.setPixmap(pix.scaled(120 if self.tiny else 92, image.height(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
         else:
             image.setText(tr('No preview'))
         estimate = fval(metadata.get('estimated_time'), float('nan'))
@@ -4471,14 +4719,13 @@ class Screen(QWidget):
         ready = self.live_print_state() in ('printing', 'paused')
         available = [name for name, excluded, _ in entries if not excluded and valid_exclude_name(name)]
         self.exclude_button.setEnabled(ready and bool(available) and not self._exclude_pending)
-        self.exclude_button.setText(tr('Exclude Object') + (f' ({sum(excluded for _, excluded, _ in entries)}/{len(entries)})' if entries else ''))
         if not supported:
             hint = 'Object exclusion requires [exclude_object] and object-marked G-code.'
         elif not entries:
             hint = 'No named objects reported for this print.'
         else:
             hint = f'{len(entries)} objects · {sum(excluded for _, excluded, _ in entries)} excluded'
-        self.exclude_hint.setText(hint)
+        self.exclude_button.setToolTip(tr('Exclude Object') + '\n' + tr(hint))
         if self._exclude_dialog is not None:
             ps = status.get('print_stats', {})
             elapsed = fval(ps.get('total_duration'), float('nan'))
@@ -4647,7 +4894,7 @@ class Screen(QWidget):
         l = self.layout_block('console_order', root, 'history', 'Console history')
         self.console = QPlainTextEdit()
         self.console.setReadOnly(True)
-        self.console.setMinimumHeight(210)
+        self.console.setMinimumHeight(160 if self.tiny else 190)
         l.addWidget(self.console)
         l = self.layout_block('console_order', root, 'command', 'Command input')
         self.console_input = TouchCommandInput(self)
@@ -4663,7 +4910,7 @@ class Screen(QWidget):
         l = self.layout_block('macros_order', root, 'commands', 'Run macros')
         f, c = card('Makros ausführen')
         self.macro_buttons = QGridLayout()
-        self.macro_buttons.setSpacing(7)
+        self.macro_buttons.setSpacing(4)
         c.addLayout(self.macro_buttons)
         l.addWidget(f)
         l = self.layout_block('macros_order', root, 'visibility', 'Macro visibility')
@@ -4841,7 +5088,7 @@ class Screen(QWidget):
         if thumbnail:
             pix = QPixmap()
             if pix.loadFromData(thumbnail) and pix.width() <= 4096 and pix.height() <= 4096:
-                self.print_thumb.setPixmap(pix.scaled(200 if self.tiny else 300, 115 if self.tiny else 150, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+                self.print_thumb.setPixmap(pix.scaled(84 if self.tiny else 124, 76 if self.tiny else 104, Qt.KeepAspectRatio, Qt.SmoothTransformation))
             else:
                 self.print_thumb.setText('No preview')
         else:
@@ -4850,6 +5097,7 @@ class Screen(QWidget):
     def update_job_controls(self, status):
         state = status.get('print_stats', {}).get('state')
         ready = self._health_state == 'ready' and time.monotonic() - self._live_status_at <= 5
+        self.pause_resume_slot.setCurrentWidget(self.print_actions['resume' if ready and state == 'paused' else 'pause'])
         for action, b in self.print_actions.items():
             allowed = state in {'pause': ('printing',), 'resume': ('paused',), 'cancel': ('printing', 'paused')}[action]
             b.setEnabled(ready and allowed and not self._print_action_pending)
@@ -4862,7 +5110,8 @@ class Screen(QWidget):
         self.z_reset_button.setEnabled(allowed and z_single_tool(status) and .0005 <= abs(z) <= .5)
         candidate, reason = z_save_snapshot(status, conf('babystep', 'eddy_method', '').strip().lower()) if ready else (None, 'Printer status unavailable.')
         idle = ready and state in ('standby', 'complete') and host_shutdown_allowed(status)
-        self.z_save_button.setText('Save after print' if state in ('printing','paused') else ('Confirm & save Z offset' if self._z_after_ready else 'Save Z offset'))
+        self.z_save_button.setText(tr('Save later' if state in ('printing','paused') else 'Save Z'))
+        self.z_save_button.setToolTip(tr('Save after print' if state in ('printing','paused') else ('Confirm & save Z offset' if self._z_after_ready else 'Save Z offset')))
         self.z_save_button.setEnabled(bool(candidate and (idle or state == 'printing') and not self._z_pending and not self._z_save_pending and not self._z_save_locked))
         self.z_save_hint.setText(('Verify the last save in printer.cfg and restart VeloxScreen before retrying.' if self._z_save_locked else ('Method: ' + candidate['method'] + ' · ' + f"{candidate['z']:+.3f} mm") if candidate else reason))
         self.z_cancel_button.setVisible(self._z_after_print is not None)
@@ -5101,7 +5350,7 @@ class Screen(QWidget):
         self.history_list.setWordWrap(True)
         self.history_list.setSelectionMode(QAbstractItemView.SingleSelection)
         QScroller.grabGesture(self.history_list.viewport(), QScroller.LeftMouseButtonGesture)
-        self.history_list.setMinimumHeight(150 if self.tiny else 220)
+        self.history_list.setMinimumHeight(130 if self.tiny else 180)
         self.history_list.itemClicked.connect(self.show_history_item)
         c.addWidget(self.history_list)
         c.addWidget(label('Tap an entry to read its full message. Last 150 events; stored locally if enabled.', 'caption'))
@@ -5216,7 +5465,7 @@ class Screen(QWidget):
                 continue
             title = catalog[key].removeprefix('Macro: ').removeprefix('Preset: ')
             b = button(title, partial(self.run_quick_action, key))
-            b.setMinimumHeight(30 if self.tiny else 36)
+            b.setMinimumHeight(touch_height())
             b.setToolTip(catalog[key])
             self.quick_layout.addWidget(b)
         self.quick_layout.addStretch()
@@ -5343,36 +5592,32 @@ class Screen(QWidget):
             spin.setDecimals(decimals)
             spin.setValue(bounded_number(conf('display', key, str(default)), default, minimum, maximum))
             spin.setProperty('touch_title', title)
-            c.addWidget(label(title))
-            c.addWidget(spin)
+            settings_field(c, title, spin, self.tiny)
             self.comfort_fields[key] = spin
-        self.keep_display_checkbox = TouchCheckBox('Keep display on while printing / paused')
+        self.keep_display_checkbox = SettingsCheckBox('Keep display on while printing / paused')
         self.keep_display_checkbox.setChecked(flag('display', 'keep_on_print', True))
         c.addWidget(self.keep_display_checkbox)
-        self.hardware_idle_checkbox = TouchCheckBox('Physical screen off via backlight / X11 DPMS (if supported)')
+        self.hardware_idle_checkbox = SettingsCheckBox('Physical screen off via backlight / X11 DPMS (if supported)')
         self.hardware_idle_checkbox.setChecked(flag('display', 'hardware_idle', False))
         self.hardware_idle_checkbox.setEnabled(self._brightness_path is not None or self._dpms_available)
         c.addWidget(self.hardware_idle_checkbox)
         c.addWidget(label('Otherwise dimming and blanking use a software overlay. First touch wakes the display. Physical mode is optional and depends on the display driver.', 'caption'))
-        c.addWidget(label('Start page'))
         self.start_page_combo = QComboBox()
         for name in self.nav_defaults:
             self.start_page_combo.addItem(tr(name), name)
         self.start_page_combo.setCurrentIndex(max(0, self.start_page_combo.findData(conf('display', 'start_page', 'Dashboard'))))
-        c.addWidget(self.start_page_combo)
-        c.addWidget(label('Pointer style (restart UI)'))
+        settings_field(c, 'Start page', self.start_page_combo, self.tiny)
         self.pointer_combo = QComboBox()
         for title, mode in (('Small dot', 'dot'), ('Hidden pointer', 'hidden'), ('System pointer', 'system')):
             self.pointer_combo.addItem(tr(title), mode)
         self.pointer_combo.setCurrentIndex(max(0, self.pointer_combo.findData(pointer_mode(conf('display', 'cursor_style', 'dot')))))
-        c.addWidget(self.pointer_combo)
+        settings_field(c, 'Pointer style (restart UI)', self.pointer_combo, self.tiny)
         if self._brightness_path is not None:
-            c.addWidget(label('Hardware brightness (%)'))
             self.brightness_spin = TouchSpinBox()
             self.brightness_spin.setRange(5, 100)
             self.brightness_spin.setDecimals(0)
             self.brightness_spin.setValue(bounded_number(conf('display', 'brightness', str(self.brightness_percent())), self.brightness_percent(), 5, 100))
-            c.addWidget(self.brightness_spin)
+            settings_field(c, 'Hardware brightness (%)', self.brightness_spin, self.tiny)
         else:
             self.brightness_spin = None
             c.addWidget(label('Hardware brightness unavailable to this user/display. Software dim/blank still works.', 'caption'))
@@ -5380,11 +5625,10 @@ class Screen(QWidget):
         self.filament_density_spin.setDecimals(3)
         self.filament_density_spin.setRange(0, 30)
         self.filament_density_spin.setValue(bounded_number(conf('print_view', 'filament_density', '0'), 0, 0, 30))
-        c.addWidget(label('Filament density (g/cm³; 0 = no gram estimate)'))
-        c.addWidget(self.filament_density_spin)
+        settings_field(c, 'Filament density (g/cm³; 0 = no gram estimate)', self.filament_density_spin, self.tiny)
         c.addWidget(label('Use only for jobs with the same filament diameter and density on all tools.', 'caption'))
-        c.addWidget(button('Save display settings', self.save_comfort_settings, True))
-        c.addWidget(button('Lock screen for cleaning', self.lock_for_cleaning))
+        settings_actions(c, (button('Save display settings', self.save_comfort_settings, True),
+                             button('Lock screen for cleaning', self.lock_for_cleaning)), self.compact)
         c.addWidget(label('Cleaning lock is available only when the printer is confirmed idle.', 'caption'))
         self.comfort_status = label('', 'caption')
         c.addWidget(self.comfort_status)
@@ -5395,7 +5639,7 @@ class Screen(QWidget):
         for key, title in (('persist_history', 'Store notification history locally'), ('popup_print', 'Print progress events'),
                            ('popup_heating', 'Temperature events'), ('popup_filament', 'Filament sensor warnings'),
                            ('popup_warning', 'Error / warning popups'), ('popup_printer', 'Printer ready events'), ('popup_g_code', 'G-Code responses')):
-            check = TouchCheckBox(title)
+            check = SettingsCheckBox(title)
             check.setChecked(flag('notifications', key, True))
             c.addWidget(check)
             self.event_preferences[key] = check
@@ -5560,9 +5804,8 @@ class Screen(QWidget):
         self.wifi_status = label('Tap Scan to find Wi-Fi networks.', 'caption')
         c.addWidget(self.wifi_status)
         self.wifi_ip = label('IP address: --', 'caption')
-        c.addWidget(self.wifi_ip)
         self.wifi_scan_button = button('Scan Wi-Fi', self.scan_wifi, True)
-        c.addWidget(self.wifi_scan_button)
+        c.addLayout(row(self.wifi_ip, self.wifi_scan_button))
         c.addWidget(label('Connecting to another Wi-Fi can interrupt SSH and Moonraker access.', 'caption'))
         l.addWidget(f)
         l = self.layout_block('network_order', root, 'networks', 'Available networks')
@@ -5678,22 +5921,29 @@ class Screen(QWidget):
                           'caption'))
         self.jog_settings_invert = {}
         self.jog_settings_speed = {}
+        if not self.compact:
+            c.addWidget(label('Jog speed (mm/s)', 'caption'))
         for axis in ('X', 'Y', 'Z'):
-            c.addWidget(label(axis + ' axis', 'caption'))
-            reverse = TouchCheckBox('Invert ' + axis + ' jog direction')
+            reverse = SettingsCheckBox('Invert ' + axis + ' jog direction')
             reverse.setChecked(self.jog_invert[axis])
-            c.addWidget(reverse)
             self.jog_settings_invert[axis] = reverse
-            speed_row = QHBoxLayout()
-            speed_row.addWidget(label(axis + ' jog speed (mm/s)'))
             speed = TouchSpinBox()
             speed.setDecimals(1)
             speed.setRange(0.1 if axis == 'Z' else 1.0, 50.0 if axis == 'Z' else 500.0)
             speed.setSingleStep(1.0 if axis == 'Z' else 5.0)
             speed.setValue(self.jog_speed[axis])
             speed.setProperty('touch_title', axis + ' Jog speed (mm/s)')
-            speed_row.addWidget(speed)
-            c.addLayout(speed_row)
+            if self.compact:
+                c.addWidget(reverse)
+                settings_field(c, axis + ' jog speed (mm/s)', speed, self.tiny)
+            else:
+                speed.setToolTip(tr(axis + ' Jog speed (mm/s)'))
+                speed.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
+                axis_row = QHBoxLayout()
+                axis_row.setSpacing(6)
+                axis_row.addWidget(reverse, 3)
+                axis_row.addWidget(speed, 2)
+                c.addLayout(axis_row)
             self.jog_settings_speed[axis] = speed
         c.addWidget(button('Save jog settings', self.save_jog_settings, True))
         self.jog_settings_status = label('', 'caption')
@@ -5701,16 +5951,14 @@ class Screen(QWidget):
         l.addWidget(f)
         l = self.layout_block('settings_order', root, 'startup', 'Startup screen')
         f, c = card('Startup screen')
-        self.show_splash_checkbox = TouchCheckBox(tr('Show startup screen'))
+        self.show_splash_checkbox = SettingsCheckBox(tr('Show startup screen'))
         self.show_splash_checkbox.setChecked(startup_bool('show_splash', True))
         self.show_splash_checkbox.setMinimumHeight(35)
         c.addWidget(self.show_splash_checkbox)
-        self.speed_lines_checkbox = TouchCheckBox(tr('Speed-line animation'))
+        self.speed_lines_checkbox = SettingsCheckBox(tr('Speed-line animation'))
         self.speed_lines_checkbox.setChecked(startup_bool('animate_speedlines', True))
         self.speed_lines_checkbox.setMinimumHeight(35)
         c.addWidget(self.speed_lines_checkbox)
-        duration_row = QHBoxLayout()
-        duration_row.addWidget(label('Startup duration'))
         self.startup_duration_combo = QComboBox()
         self.startup_duration_combo.setMinimumHeight(37)
         for seconds in (1, 2, 3, 5):
@@ -5718,13 +5966,10 @@ class Screen(QWidget):
         existing_duration = int(fval(conf('startup', 'duration_seconds', '3'), 3))
         combo_idx = self.startup_duration_combo.findData(existing_duration)
         self.startup_duration_combo.setCurrentIndex(max(0, combo_idx))
-        duration_row.addWidget(self.startup_duration_combo)
-        c.addLayout(duration_row)
+        settings_field(c, 'Startup duration', self.startup_duration_combo, self.tiny)
         c.addWidget(label('The logo transitions smoothly to the dashboard. Tap to skip.', 'caption'))
-        controls = QHBoxLayout()
-        controls.addWidget(button('Preview splash', self.preview_startup_splash))
-        controls.addWidget(button('Save startup settings', self.save_startup_settings, True))
-        c.addLayout(controls)
+        settings_actions(c, (button('Preview splash', self.preview_startup_splash),
+                             button('Save startup settings', self.save_startup_settings, True)), self.compact)
         self.startup_status = label('', 'caption')
         c.addWidget(self.startup_status)
         l.addWidget(f)
@@ -5742,13 +5987,12 @@ class Screen(QWidget):
         self.lang_combo.addItem('English', 'en')
         self.lang_combo.addItem('Deutsch', 'de')
         self.lang_combo.setCurrentIndex(0 if LANGUAGE == 'en' else 1)
-        c.addWidget(self.lang_combo)
-        c.addWidget(label('Default: English. Changing the language restarts the UI.'))
-        c.addWidget(button('Apply language', self.apply_language, True))
+        settings_actions(c, (self.lang_combo, button('Apply language', self.apply_language, True)), self.compact)
+        c.addWidget(label('Default: English. Changing the language restarts the UI.', 'caption'))
         l.addWidget(f)
         l = self.layout_block('settings_order', root, 'confirmations', 'Confirmation dialogs')
         f, c = card('Bestätigungsdialoge')
-        self.confirm_checkbox = TouchCheckBox(tr('Confirm other G-code commands'))
+        self.confirm_checkbox = SettingsCheckBox(tr('Confirm other G-code commands'))
         self.confirm_checkbox.setMinimumHeight(46)
         self.confirm_checkbox.setChecked(self.confirm_enabled)
         self.confirm_checkbox.toggled.connect(self.change_confirmation)
@@ -5759,7 +6003,7 @@ class Screen(QWidget):
                 ('confirm_tool_change', 'Confirm tool changes'),
                 ('confirm_extrusion', 'Confirm extrusion / retract'),
                 ('confirm_filament', 'Confirm load / unload')):
-            widget = TouchCheckBox(tr(title))
+            widget = SettingsCheckBox(tr(title))
             widget.setMinimumHeight(40)
             widget.setChecked(self.direct_tool_change if key == 'direct_tool_change' else self.tool_confirmation[key])
             widget.toggled.connect(lambda checked, option=key: self.change_tool_behavior(option, checked))
@@ -5767,7 +6011,7 @@ class Screen(QWidget):
             c.addWidget(widget)
         c.addWidget(label('When direct tool change is off, select a tool and use Activate selected tool.', 'caption'))
         c.addWidget(label('These options do not disable printer interlocks or emergency confirmations.', 'caption'))
-        self.confirm_shutdown_checkbox = TouchCheckBox(tr('Confirm host shutdown'))
+        self.confirm_shutdown_checkbox = SettingsCheckBox(tr('Confirm host shutdown'))
         self.confirm_shutdown_checkbox.setMinimumHeight(40)
         self.confirm_shutdown_checkbox.setChecked(self.confirm_shutdown)
         self.confirm_shutdown_checkbox.toggled.connect(self.change_shutdown_confirmation)
@@ -5776,22 +6020,19 @@ class Screen(QWidget):
         l.addWidget(f)
         l = self.layout_block('settings_order', root, 'notifications', 'G-Code notifications')
         f, c = card(tr('G-Code notifications'))
-        self.notifications_checkbox = TouchCheckBox(tr('Show RESPOND / macro messages'))
+        self.notifications_checkbox = SettingsCheckBox(tr('Show RESPOND / macro messages'))
         self.notifications_checkbox.setMinimumHeight(41)
         self.notifications_checkbox.setChecked(self.notifications_enabled)
         self.notifications_checkbox.toggled.connect(self.change_notifications)
         c.addWidget(self.notifications_checkbox)
         c.addWidget(label('Show Klipper RESPOND output as a non-blocking popup, including IDEX toolchanges. Macros must emit RESPOND to provide a message.', 'caption'))
-        duration_row = QHBoxLayout()
-        duration_row.addWidget(label('Popup duration'))
         self.notification_duration_combo = QComboBox()
         for seconds in (2, 3, 4, 5, 8, 10):
             self.notification_duration_combo.addItem(f'{seconds} s', seconds)
         idx = self.notification_duration_combo.findData(self.notification_duration)
         self.notification_duration_combo.setCurrentIndex(max(0, idx))
         self.notification_duration_combo.currentIndexChanged.connect(self.change_notification_duration)
-        duration_row.addWidget(self.notification_duration_combo)
-        c.addLayout(duration_row)
+        settings_field(c, 'Popup duration', self.notification_duration_combo, self.tiny)
         c.addWidget(button('Test popup', lambda: self.show_notification('IDEX: T1 active (test)', force=True)))
         l.addWidget(f)
         l = self.layout_block('settings_order', root, 'recovery', 'Klipper / Host Recovery')
@@ -5802,11 +6043,11 @@ class Screen(QWidget):
         l.addWidget(f)
         l = self.layout_block('settings_order', root, 'service', 'Service Control')
         f, c = card('Service Control')
-        c.addWidget(button('VeloxScreen neu starten', self.restart_screen, True))
+        restart_button = button('VeloxScreen neu starten', self.restart_screen, True)
         self.shutdown_button = button('Shutdown Host', self.request_host_shutdown)
         self.shutdown_button.setToolTip(tr('Shutdown is allowed only when the printer is confirmed idle. Let the hotends cool first.'))
         self.shutdown_button.setEnabled(False)
-        c.addWidget(self.shutdown_button)
+        settings_actions(c, (restart_button, self.shutdown_button), self.compact)
         self.shutdown_status = label('', 'caption')
         self.shutdown_status.setTextFormat(Qt.PlainText)
         self.shutdown_status.hide()
@@ -5815,7 +6056,9 @@ class Screen(QWidget):
         l.addWidget(f)
         l = self.layout_block('settings_order', root, 'configuration', 'Configuration')
         f, c = card('Konfiguration')
-        c.addWidget(label(str(CFG_PATH), 'caption'))
+        path_label = label(str(CFG_PATH).replace('/', '/\u200b'), 'caption')
+        path_label.setToolTip(str(CFG_PATH))
+        c.addWidget(path_label)
         c.addWidget(label('Makros ein-/ausblenden unter Makros. Die Einstellungen werden in veloxscreen.conf gespeichert.', 'caption'))
         l.addWidget(f)
 
@@ -6206,7 +6449,7 @@ class Screen(QWidget):
                 tile = QFrame()
                 tile.setObjectName('card')
                 tile_lay = QVBoxLayout(tile)
-                tile_lay.setContentsMargins(8, 5, 8, 5)
+                tile_lay.setContentsMargins(5, 3, 5, 3)
                 tile_lay.setSpacing(2)
                 title = ('T0 · Hotend' if name == 'extruder' else
                          f'T{name[8:]} · Hotend' if re.fullmatch(r'extruder\d+', name) else
@@ -6219,7 +6462,8 @@ class Screen(QWidget):
                 tile_lay.addWidget(value)
                 tile_lay.addWidget(subtitle)
                 self.dash_temp_widgets[name] = (value, subtitle)
-                self.dash_temp_grid.addWidget(tile, i // (1 if self.tiny else 2), i % (1 if self.tiny else 2))
+                columns = dashboard_tile_columns(self.content_width / max(1, self.ui_scale * bounded_number(conf('display', 'font_scale', '1'), 1, .8, 1.5)), self.tiny)
+                self.dash_temp_grid.addWidget(tile, i // columns, i % columns)
         self.dash_temp_empty.setVisible(not bool(chosen))
         if not chosen:
             self.dash_temp_empty.setText(tr('Keine passenden Heizungen oder Kammersensoren gefunden.'))
@@ -6539,7 +6783,7 @@ class Screen(QWidget):
                 item = self.print_temp_grid.takeAt(0)
                 if item.widget():
                     item.widget().deleteLater()
-            cols = 1 if self.compact else 2
+            cols = 1 if self.content_width < 520 else 2
             for i, name in enumerate(names):
                 title = ('T0 · Hotend' if name == 'extruder' else
                          'T' + name[8:] + ' · Hotend' if re.fullmatch(r'extruder\d+', name) else
@@ -6605,24 +6849,26 @@ class Screen(QWidget):
                 if name=='extruder': pretty='T0 · Hotend'
                 if re.fullmatch(r'extruder\d+',name): pretty='T'+name[len('extruder'):]+' · Hotend'
                 name_label=label(pretty, 'sectionTitle')
-                c.addWidget(name_label)
-                temperature=label('-- °C','metric')
+                header = QHBoxLayout()
+                header.setSpacing(4)
+                header.addWidget(name_label, 1)
+                temperature=label('-- °C','tempValue')
                 temperature.setWordWrap(False)
                 target=label('Sensor' if not is_heater else 'Soll -- °C','caption')
-                readings=QHBoxLayout()
-                readings.setSpacing(5)
-                readings.addWidget(temperature, 0)
-                readings.addWidget(target, 1, Qt.AlignVCenter)
-                c.addLayout(readings)
+                header.addWidget(temperature, 0, Qt.AlignVCenter)
+                c.addLayout(header)
                 if is_heater:
                     set_button=button('Temperatur setzen', partial(self.set_heater,name),True)
-                    c.addWidget(set_button)
-                elif name.startswith('temperature_fan '):
-                    target.setText(tr('Temp.-Lüfter'))
+                    c.addLayout(row(target, set_button))
                 else:
+                    c.addWidget(target)
+                if not is_heater and name.startswith('temperature_fan '):
+                    target.setText(tr('Temp.-Lüfter'))
+                elif not is_heater:
                     target.setText(tr('Nur Anzeige'))
                 self.temp_widgets[name]=(temperature,target)
-                self.temperature_grid.addWidget(f,i//(1 if self.tiny else 2),i%(1 if self.tiny else 2))
+                columns = 1 if self.content_width < 520 else 2
+                self.temperature_grid.addWidget(f, i // columns, i % columns)
             self.temp_info.setVisible(not (heaters or sensors))
             if not (heaters or sensors): self.temp_info.setText(tr('Keine Temperaturobjekte erkannt.'))
         for name,(reading,target) in self.temp_widgets.items():
@@ -6656,9 +6902,10 @@ class Screen(QWidget):
                 if item.widget():
                     item.widget().deleteLater()
             for name in fans:
-                frame, layout = card(name)
-                value_label = label('— %', 'metric')
-                layout.addWidget(value_label)
+                frame, layout = card()
+                value_label = label('— %', 'readout')
+                value_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+                layout.addLayout(row(label(name, 'sectionTitle'), value_label))
                 if name == 'fan' or name.startswith('fan_generic '):
                     slider = TapFanSlider(Qt.Horizontal)
                     slider.setRange(0, 100)

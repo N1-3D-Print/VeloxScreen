@@ -1,3 +1,26 @@
+## v0.4.15-alpha — Compact whole-screen UI
+
+- Reduce shared page, card, navigation, quick-action and control spacing; retain configurable font and button scales and unchanged emergency-stop dimensions.
+- Adapt dashboard temperature grid to usable width (one to three columns); keep all discovered tools and heater states. Combine motion units, override headings and values, and fan headings and percentages.
+- Keep compact Print overview and babystepping; reduce preview and graph heights. Pair extrusion configuration fields and improve Control movement/homing width detection.
+- Compact temperature tiles, file cards, LED and network controls, macro grids, console, calibration and notification history. Preserve narrow layouts and actions, previous Settings scroll lock and horizontal quick navigation.
+- Dependency-free regression tests cover density decisions and existing callbacks. Native Qt/hardware rendering is not verified here.
+
+## v0.4.14-alpha — Compact vertical Settings
+
+- Constrain Settings kinetic scroll events to the vertical axis and reset horizontal scrollbar changes, without changing horizontal quick-action navigation.
+- Reduce settings card margins and control heights; put related form labels and values alongside each other, combine jog axis controls and pair actions where space permits. Keep narrow-screen fallbacks, existing theme and scaling settings.
+- Wrap settings checkbox text and keep full-row touch targets. All existing actions, safety checks, settings visibility/order and configuration keys remain intact.
+- Based on v0.4.13 compact print and layout touch; remote display streaming is not included.
+
+## v0.4.13-alpha — Compact print and layout touch
+
+- Combine preview and live progress/ETA in a side-by-side card. Keep job details independently orderable, with the existing job_details hide setting also hiding the preview.
+- Share one Pause/Resume slot; place compact Exclude between it and Cancel. Keep confirmation and state checks; remove the normal Print recovery shortcut, retaining Settings and fault recovery.
+- Put Z offset and selectable increment on the left and Z+/Z−, Save/Reset on the right; keep deferred save, reminder and existing safeguards.
+- Handle native single-finger scrolling and short taps in the layout list; retain mouse-emulated swipes and explicit drag mode.
+- Remote display streaming is not part of this release.
+
 ## v0.4.12-alpha — Menu visibility and tap fan controls
 
 - Per-menu section visibility and ordering in the existing layout editor, saved independently; reset restores the selected category, cancel discards edits. The layout editor, print actions and safety/recovery access remain fixed. Add Console and Network sections to the catalog.
