@@ -6,9 +6,13 @@
 Responsive layout for small Raspberry Pi touchscreens (experimental 320 × 240 to 1024 × 600). No browser required.
 
 > [!WARNING]
-> **Early Alpha (v0.4.16)** — bugs and incomplete features are expected. Test printer controls carefully. Found an issue? **Please open a GitHub Issue!** Feedback and suggestions are welcome.
+> **Early Alpha (v0.4.17)** — bugs and incomplete features are expected. Test printer controls carefully. Found an issue? **Please open a GitHub Issue!** Feedback and suggestions are welcome.
 
-## What's new in v0.4.16 Alpha
+## What's new in v0.4.17 Alpha
+
+**Object exclusion hotfix:** Unicode alphanumeric object names (for example `KÖRPER1_ID_0_COPY_0`) are now accepted. The existing object matching, print-state and command-injection guards remain in place. No config changes required.
+
+### Previous update: v0.4.16
 
 **Dedicated Extruder page:** the existing Tools navigation is now labeled Extruder, keeping the stable `Tools` ID for saved layouts and shortcuts. Tool tiles and filament states, selected-hotend and bed actual/target temperatures, and temperature presets are grouped above manual filament controls. Tap distance (5/10/15/25/50 mm) and speed (2/5/10/25/50 mm/s) buttons; the nominal requested volumetric flow updates from the selected tool's filament diameter, before overrides. Extrude/Retract and discovered Load/Unload/All commands retain their guards and confirmation preferences. Pressure Advance and Firmware Retract remain below, individually customizable. Vertical one-finger native touch or mouse-emulated scroll; swipes never count as short native taps. Old example choices are upgraded at runtime; custom choices are preserved within existing command bounds. No printer config changes. Native Qt and hardware testing remain outstanding.
 

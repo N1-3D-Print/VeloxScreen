@@ -590,8 +590,9 @@ def exclude_objects(status):
 
 
 def valid_exclude_name(name):
-    # Only single-token names can safely be passed to Klipper extended G-code.
-    return isinstance(name, str) and re.fullmatch(r'[A-Za-z0-9_.:+-]+', name) is not None
+    # Allow Unicode alphanumeric single-token names (e.g. KÖRPER), but never
+    # whitespace, quotes, escapes or G-code argument/command separators.
+    return isinstance(name, str) and re.fullmatch(r'[\w.:+-]+', name) is not None
 
 
 def exclusion_allowed(status, filename, name, duration):
@@ -3564,7 +3565,7 @@ class Screen(QWidget):
             self.pages[name] = self._page(name, builder)
             self.stack.addWidget(self.pages[name])
         nav_layout.addStretch()
-        sl.addWidget(label('v0.4.16 alpha', 'caption'))
+        sl.addWidget(label('v0.4.17 alpha', 'caption'))
         # IMPORTANT: Qt otherwise deletes self.connection and all nav buttons.
         outer.addWidget(sidebar)
         sidebar.setVisible(not self.compact)

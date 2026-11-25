@@ -1,3 +1,8 @@
+## v0.4.17-alpha — Unicode object exclusion fix
+
+- Accept Unicode alphanumeric single-token object names such as `KÖRPER1_ID_0_COPY_0` in the Exclude UI and command validation. Preserve rejection of whitespace, command separators, quotes and escape characters, exact object matching and fresh print-state checks.
+- Add regression tests using the reported Trident object names and mocked Moonraker calls. No printer configuration changes.
+
 ## v0.4.16-alpha — Compact Extruder page
 
 - Relabel Tools as Extruder without changing its saved navigation ID. Show tool tiles, sensors, selected hotend and bed readings and existing temperature presets together.

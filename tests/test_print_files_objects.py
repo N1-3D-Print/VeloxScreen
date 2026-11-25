@@ -78,3 +78,32 @@ class ObjectTests(unittest.TestCase):
         self.assertFalse(results[-1][0]); self.assertFalse(any(p=='/printer/gcode/script' for p,_ in calls))
         s['print_stats']['filename']='b.gcode'; calls.clear(); run(n,'a.gcode','PART_1',59)
         self.assertFalse(results[-1][0]); self.assertFalse(any(p=='/printer/gcode/script' for p,_ in calls))
+
+
+    def test_unicode_object_names_from_trident(self):
+        names = ['KÖRPER12_ID_2_COPY_0', 'KÖRPER1_ID_0_COPY_0', 'KÖRPER1_ID_1_COPY_0']
+        filename = '12032_Chamber Heater_ABS_2h30m.gcode'
+        s = {'print_stats': {'filename': filename, 'state': 'printing', 'total_duration': 915.07},
+             'exclude_object': {'objects': [{'name': n} for n in names],
+                                'excluded_objects': [names[0]], 'current_object': names[2]}}
+        self.assertEqual([n for n, excluded, _ in objects(s) if not excluded and valid_name(n)], names[1:])
+        self.assertFalse(allowed(s, filename, names[0], 900))
+        self.assertTrue(allowed(s, filename, names[1], 900))
+        self.assertTrue(allowed(s, filename, names[2], 900))
+        calls, results = [], []
+        def call(path, *args):
+            calls.append((path, args))
+            if path == '/printer/info': return {'result': {'state': 'ready'}}
+            if path.startswith('/printer/objects/query'): return {'result': {'status': s}}
+            return {'result': 'ok'}
+        n = SimpleNamespace(call=call, exclude_result=SimpleNamespace(emit=lambda *a: results.append(a)))
+        run = get_method('Network', 'exclude_print_object', {'exclusion_allowed': allowed, 'threading': SimpleNamespace(Thread=ImmediateThread)})
+        run(n, filename, names[1], 900)
+        self.assertTrue(results[-1][0])
+        self.assertEqual(calls[-1], ('/printer/gcode/script', ('POST', {'script': 'EXCLUDE_OBJECT NAME=' + names[1]})))
+
+    def test_unicode_name_rejects_command_separators(self):
+        for name in ('KÖRPER_1', 'ÄÖÜ_ß-2', '部品_3'):
+            self.assertTrue(valid_name(name))
+        for name in ('KÖRPER\nM112', 'KÖRPER\rM112', 'KÖRPER\tX', 'KÖRPER;M112', 'KÖRPER#M112', 'KÖRPER=1', 'KÖRPER"', "KÖRPER'", 'KÖRPER\\X', 'KÖRPER\u00a0X', 'KÖRPER\u2028X', 'KÖRPER\u200bX', 'KÖRPER\x00X'):
+            self.assertFalse(valid_name(name), repr(name))
