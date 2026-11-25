@@ -76,6 +76,16 @@ Set `confirm_commands` to `false` to remove the normal G-Code prompt. `confirm_t
 
 `confirm_shutdown` independently controls the Settings → Service Control **Shutdown Host** confirmation (default: `true`), also accessible under Settings → Confirmation dialogs. The button only becomes available when a live idle state is confirmed; the state is checked again immediately before the request. Active/paused prints and unknown state remain blocked even with confirmation disabled. Let the hotends cool before shutting down. Moonraker must have permission to shut down its host OS. This does not switch off a separate printer power supply or change M112/recovery confirmations.
 
+## Extruder buttons and nominal flow
+
+```ini
+[extrusion]
+lengths = 5, 10, 15, 25, 50
+speeds = 2, 5, 10, 25, 50
+```
+
+Distances are in mm and speeds in mm/s. The previous shipped defaults (`1, 5, 10, 50, 100` and `2, 5, 10, 20, 50`) are replaced at runtime; other valid custom choices are retained (distance up to 150 mm, speed up to 50 mm/s). The first valid choice is initially selected. Nominal flow is `speed × π × (filament_diameter/2)²` in mm³/s, using the selected tool's Klipper settings; a missing diameter uses a labeled 1.75 mm default, invalid values show unavailable. This is not measured flow and does not include M220/M221 or firmware limits. Tool/temperature and extrusion blocks retain their existing layout IDs; `pressure_advance` is now separately hideable and orderable. The `Tools` page ID stays stable although the displayed name is Extruder.
+
 ## Speed and flow overrides
 
 ```ini

@@ -1,3 +1,10 @@
+## v0.4.16-alpha — Compact Extruder page
+
+- Relabel Tools as Extruder without changing its saved navigation ID. Show tool tiles, sensors, selected hotend and bed readings and existing temperature presets together.
+- Replace extrusion length and speed dropdowns with checkable responsive button grids. Migrate old shipped defaults at runtime; preserve valid custom values. Calculate nominal flow using the selected extruder's filament diameter, with a marked 1.75 mm fallback only when missing.
+- Keep all existing filament actions, guards, confirmation preferences and advanced PA/retract settings; make PA a separate hideable layout block. New extruder presets require fresh idle state. No new printer macros.
+- Constrain Extruder scrolling vertically; handle native single-finger swipes and short taps separately, retaining X11 mouse-emulated kinetic scrolling. No native Qt or hardware validation here.
+
 ## v0.4.15-alpha — Compact whole-screen UI
 
 - Reduce shared page, card, navigation, quick-action and control spacing; retain configurable font and button scales and unchanged emergency-stop dimensions.

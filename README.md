@@ -6,9 +6,13 @@
 Responsive layout for small Raspberry Pi touchscreens (experimental 320 × 240 to 1024 × 600). No browser required.
 
 > [!WARNING]
-> **Early Alpha (v0.4.15)** — bugs and incomplete features are expected. Test printer controls carefully. Found an issue? **Please open a GitHub Issue!** Feedback and suggestions are welcome.
+> **Early Alpha (v0.4.16)** — bugs and incomplete features are expected. Test printer controls carefully. Found an issue? **Please open a GitHub Issue!** Feedback and suggestions are welcome.
 
-## What's new in v0.4.15 Alpha
+## What's new in v0.4.16 Alpha
+
+**Dedicated Extruder page:** the existing Tools navigation is now labeled Extruder, keeping the stable `Tools` ID for saved layouts and shortcuts. Tool tiles and filament states, selected-hotend and bed actual/target temperatures, and temperature presets are grouped above manual filament controls. Tap distance (5/10/15/25/50 mm) and speed (2/5/10/25/50 mm/s) buttons; the nominal requested volumetric flow updates from the selected tool's filament diameter, before overrides. Extrude/Retract and discovered Load/Unload/All commands retain their guards and confirmation preferences. Pressure Advance and Firmware Retract remain below, individually customizable. Vertical one-finger native touch or mouse-emulated scroll; swipes never count as short native taps. Old example choices are upgraded at runtime; custom choices are preserved within existing command bounds. No printer config changes. Native Qt and hardware testing remain outstanding.
+
+### Previous update: v0.4.15
 
 **Compact UI across the entire interface:** smaller navigation, quick-action bar, page/card margins and touch-control spacing. Dashboard heater tiles use three columns where sufficient width is available; all tools remain visible. Compact motion, override, fan and heater readings; paired extruder/firmware-retract settings; side-by-side file previews and details, with narrower fallbacks. LED, network, console, calibration and notification pages also use space more efficiently. The existing font/button scaling, per-menu visibility and order, Settings vertical scroll, fixed emergency stop and print safeguards are preserved. No new config keys required. Native Qt and physical touch rendering still need device validation.
 

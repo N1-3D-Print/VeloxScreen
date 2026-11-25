@@ -141,6 +141,42 @@ def options(section, key, fallback):
     return out or [float(x.strip()) for x in fallback.split(',')]
 
 
+def extrusion_choices(key, raw):
+    """Refresh the old shipped defaults; preserve intentionally customized steps."""
+    defaults = {'lengths': (5., 10., 15., 25., 50.), 'speeds': (2., 5., 10., 25., 50.)}
+    legacy = {'lengths': (1., 5., 10., 50., 100.), 'speeds': (2., 5., 10., 20., 50.)}
+    maximum = 150. if key == 'lengths' else 50.
+    values = []
+    for part in str(raw).split(','):
+        try:
+            value = float(part.strip())
+        except ValueError:
+            continue
+        if math.isfinite(value) and 0 < value <= maximum and value not in values:
+            values.append(value)
+    return defaults[key] if not values or tuple(values) == legacy[key] else tuple(values)
+
+
+def requested_extrusion_flow(speed, diameter):
+    """Nominal volume per second, before firmware speed/flow overrides."""
+    try:
+        speed, diameter = float(speed), float(diameter)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(speed) or not math.isfinite(diameter) or not 0 < speed <= 50 or diameter <= 0:
+        return None
+    try:
+        flow = speed * math.pi * (diameter / 2.) ** 2
+    except OverflowError:
+        return None
+    return flow if math.isfinite(flow) else None
+
+
+def extrusion_button_columns(content_width):
+    """Keep numeric targets wide enough for a finger on small displays."""
+    return 5 if content_width >= 380 else 3 if content_width >= 245 else 2
+
+
 def clamp_override(value, minimum, maximum):
     """Bound a percentage and retain whole-percent increments."""
     return min(max(int(round(value)), minimum), maximum)
@@ -1280,6 +1316,9 @@ _ADDED_EN_DE = {
      'Menübereiche ein- und ausblenden sowie Navigation, Lüfter und Temperaturkacheln sortieren. Sicherheitsfunktionen bleiben fest.'),
     ('Dashboard blocks', 'Dashboard-Blöcke'), ('Print blocks', 'Druck-Blöcke'),
     ('Control blocks', 'Steuerungs-Blöcke'), ('Tools blocks', 'Werkzeug-Blöcke'),
+    ('Requested flow', 'Soll-Volumenstrom'), ('Active:', 'Aktiv:'), ('Selected:', 'Auswahl:'), ('Length · mm', 'Länge · mm'),
+    ('Speed · mm/s', 'Geschwindigkeit · mm/s'), ('Tool / temperatures', 'Tool / Temperaturen'),
+    ('Extrude / retract require an idle printer and a hot, active tool.', 'Extrudieren nur im Leerlauf mit heißem, aktivem Tool.'),
     ('Temperature blocks', 'Temperatur-Blöcke'), ('Macro blocks', 'Makro-Blöcke'),
     ('Settings blocks', 'Einstellungs-Blöcke'), ('Navigation', 'Navigation'),
     ('Temperature tiles', 'Temperaturkacheln'), ('Macro buttons', 'Makro-Schaltflächen'),
@@ -1457,6 +1496,11 @@ _ADDED_EN_DE = {
 
 def tr(message):
     text = str(message)
+    # Retain the stable Tools navigation ID for existing saved layouts/shortcuts.
+    if text == 'Tools':
+        return 'Extruder'
+    if text == 'Tools blocks':
+        return 'Extruder-Blöcke' if LANGUAGE == 'de' else 'Extruder blocks'
     if LANGUAGE == 'de':
         if text in ('Exclude', 'Save later', 'Save Z', 'Reset Z'):
             return {'Exclude': 'Ausschl.', 'Save later': 'Später', 'Save Z': 'Speichern', 'Reset Z': 'Z zurück'}[text]
@@ -1867,6 +1911,99 @@ def settings_actions(layout, widgets, stacked=False):
         for widget in widgets:
             line.addWidget(widget, 1)
         layout.addLayout(line)
+
+
+class ExtruderScrollArea(SettingsScrollArea):
+    """Single-finger native touch and existing X11 mouse-emulated scrolling."""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._touch_origin = None
+        self._touch_last = None
+        self._touch_start_y = 0
+        self._touch_moved = False
+        self._touch_target = None
+
+    def viewportEvent(self, event):
+        kind = event.type()
+        if kind not in (QEvent.TouchBegin, QEvent.TouchUpdate, QEvent.TouchEnd, QEvent.TouchCancel):
+            return super().viewportEvent(event)
+        if kind == QEvent.TouchCancel:
+            self._touch_origin = self._touch_target = None
+        else:
+            points = event.touchPoints()
+            if kind == QEvent.TouchBegin:
+                self._touch_origin = self._touch_target = None
+                if len(points) == 1:
+                    QScroller.scroller(self.viewport()).stop()
+                    self._touch_origin = self._touch_last = points[0].pos()
+                    self._touch_start_y = self.verticalScrollBar().value()
+                    self._touch_moved = False
+                    self._touch_target = self.viewport().childAt(self._touch_origin.toPoint())
+            elif len(points) > 1:
+                # Multi-touch must not turn into a motion-button tap.
+                self._touch_origin = self._touch_target = None
+            elif self._touch_origin is not None:
+                pos = points[0].pos() if points else self._touch_last
+                self._touch_last = pos
+                dy = pos.y() - self._touch_origin.y()
+                dx = pos.x() - self._touch_origin.x()
+                if max(abs(dx), abs(dy)) >= QApplication.startDragDistance():
+                    self._touch_moved = True
+                if self._touch_moved:
+                    self.verticalScrollBar().setValue(self._touch_start_y - round(dy))
+                if kind == QEvent.TouchEnd:
+                    target = self._touch_target
+                    tap = not self._touch_moved and target is not None and target is self.viewport().childAt(pos.toPoint())
+                    # Reset before dispatch; a tap can open a modal keypad.
+                    self._touch_origin = self._touch_target = None
+                    if tap:
+                        self._dispatch_touch_tap(target)
+        event.accept()
+        return True
+
+    def _dispatch_touch_tap(self, target):
+        # Only known enabled controls can activate from a genuine short tap.
+        while target is not None and target is not self.viewport():
+            if isinstance(target, (QPushButton, TouchSpinBox)):
+                if target.isEnabled() and target.isVisible():
+                    if isinstance(target, QPushButton):
+                        target.click()
+                    else:
+                        target.show_pad()
+                return
+            target = target.parentWidget()
+
+
+class ExtrusionStepButtons(QWidget):
+    """Checkable, mutually exclusive numeric choices; selecting never sends G-code."""
+    changed = pyqtSignal()
+
+    def __init__(self, values, columns, parent=None):
+        super().__init__(parent)
+        self._buttons = QButtonGroup(self)
+        self._buttons.setExclusive(True)
+        self._value = values[0]
+        grid = QGridLayout(self)
+        grid.setContentsMargins(0, 0, 0, 0)
+        grid.setSpacing(3)
+        for i, value in enumerate(values):
+            b = button(f'{value:g}', partial(self._select, value))
+            b.setCheckable(True)
+            b.setChecked(i == 0)
+            b.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+            b.setStyleSheet('QPushButton:checked:enabled { background: #2866bd; color: white; border-color: #75c3ff; }')
+            self._buttons.addButton(b)
+            grid.addWidget(b, i // columns, i % columns)
+        for col in range(min(columns, len(values))):
+            grid.setColumnStretch(col, 1)
+
+    def _select(self, value, checked=False):
+        if value != self._value:
+            self._value = value
+            self.changed.emit()
+
+    def currentText(self):
+        return f'{self._value:g}'
 
 
 class TapFanSlider(QSlider):
@@ -3427,7 +3564,7 @@ class Screen(QWidget):
             self.pages[name] = self._page(name, builder)
             self.stack.addWidget(self.pages[name])
         nav_layout.addStretch()
-        sl.addWidget(label('v0.4.15 alpha', 'caption'))
+        sl.addWidget(label('v0.4.16 alpha', 'caption'))
         # IMPORTANT: Qt otherwise deletes self.connection and all nav buttons.
         outer.addWidget(sidebar)
         sidebar.setVisible(not self.compact)
@@ -3582,6 +3719,8 @@ class Screen(QWidget):
     def _page(self, name, builder):
         settings = name == 'Einstellungen'
         scroll = SettingsScrollArea() if settings else FingerScrollArea()
+        if name == 'Tools':
+            scroll = ExtruderScrollArea()
         container = QWidget()
         container.setObjectName('veloxPage')
         content = QVBoxLayout(container)
@@ -3839,13 +3978,18 @@ class Screen(QWidget):
         entries = dict(config.items('temperature_presets')) if config.has_section('temperature_presets') else {}
         entries = [(name, entries[name]) for name in ordered_items(entries, read_layout_order('preset_order'))]
         for grid, columns in ((getattr(self, 'dashboard_presets', None), 3),
+                              (getattr(self, 'extruder_preset_grid', None), 3 if self.content_width >= 500 else 2),
                               (getattr(self, 'temp_preset_grid', None), 2)):
             if grid is None:
                 continue
             self._clear_layout(grid)
             for i, (name, content) in enumerate(entries):
-                b = button(name, partial(self.apply_temp_preset, name, content))
-                b.setMinimumHeight(39)
+                is_extruder = grid is getattr(self, 'extruder_preset_grid', None)
+                callback = self.apply_extruder_preset if is_extruder else self.apply_temp_preset
+                b = button(name, partial(callback, name, content))
+                b.setMinimumHeight(touch_height() if is_extruder else 39)
+                if is_extruder:
+                    b.setEnabled(self.filament_idle())
                 self.preset_status_buttons.append((b, name, content))
                 grid.addWidget(b, i // (1 if self.tiny else columns), i % (1 if self.tiny else columns))
             if not entries:
@@ -4370,9 +4514,10 @@ class Screen(QWidget):
 
     def make_tools(self, l):
         root = l
-        l = self.layout_block('tools_order', root, 'tool', 'Tool / Extruder / PA')
-        f, c = card('Tool / Extruder')
+        l = self.layout_block('tools_order', root, 'tool', 'Tool / Extruder / temperatures')
+        f, c = card('Tool / temperatures')
         self.tool_selector = QComboBox()
+        self.tool_selector.hide()
         self.tool_selector.currentTextChanged.connect(self.update_tool)
         c.addWidget(self.tool_selector)
         self.tool_button_grid = QGridLayout()
@@ -4386,22 +4531,71 @@ class Screen(QWidget):
         self.activate_tool_button.hide()
         self.activate_tool_button.setEnabled(False)
         self.tool_temperature_button.setEnabled(False)
-        c.addLayout(row(self.activate_tool_button, self.tool_temperature_button))
-        self.selected_heating_status = label('Target unavailable', 'caption')
-        c.addWidget(self.selected_heating_status)
-        self.s['tool_info'] = label('Extruder wird erkannt ...')
+        c.addWidget(self.activate_tool_button)
+        self.tool_temperature_button.setText('Hotend · — / — °C')
+        self.tool_temperature_button.setToolTip(tr('Set tool temperature'))
+        self.extruder_bed_temp = label('Bed · — / — °C', 'readout')
+        self.extruder_bed_temp.setAlignment(Qt.AlignCenter)
+        c.addLayout(row(self.tool_temperature_button, self.extruder_bed_temp))
+        self.s['tool_info'] = label('Extruder wird erkannt ...', 'caption')
         c.addWidget(self.s['tool_info'])
+        c.addWidget(label('Temperature presets', 'caption'))
+        self.extruder_preset_grid = QGridLayout()
+        self.extruder_preset_grid.setSpacing(3)
+        c.addLayout(self.extruder_preset_grid)
+        l.addWidget(f)
+
+        l = self.layout_block('tools_order', root, 'extrusion', 'Extrusion')
+        f, c = card('Extrusion')
+        columns = extrusion_button_columns(self.content_width)
+        self.extrude_len = ExtrusionStepButtons(extrusion_choices('lengths', conf('extrusion', 'lengths')), columns)
+        self.extrude_speed = ExtrusionStepButtons(extrusion_choices('speeds', conf('extrusion', 'speeds')), columns)
+        for title, choices in (('Length · mm', self.extrude_len), ('Speed · mm/s', self.extrude_speed)):
+            if self.content_width >= 500:
+                line = QHBoxLayout()
+                line.setSpacing(4)
+                line.addWidget(label(title, 'caption'), 1)
+                line.addWidget(choices, 4)
+                c.addLayout(line)
+            else:
+                c.addWidget(label(title, 'caption'))
+                c.addWidget(choices)
+        self.extrude_flow_label = label('Requested flow: — mm³/s', 'readout')
+        self.extrude_flow_label.setToolTip(tr('Calculated from filament diameter and selected speed, before speed/flow overrides. Not a measured hotend flow.'))
+        c.addWidget(self.extrude_flow_label)
+        self.extrude_speed.changed.connect(self.refresh_extrusion_flow)
+        c.addWidget(label('Extrude / retract require an idle printer and a hot, active tool.', 'caption'))
+        self.extrude_buttons = (button('Extrudieren', partial(self.extrude, 1), True),
+                                button('Zurückziehen', partial(self.extrude, -1)))
+        for widget in self.extrude_buttons:
+            widget.setEnabled(False)
+        c.addLayout(row(*self.extrude_buttons))
+        self.filament_buttons = {}
+        for keys in (('load', 'unload'), ('load_all', 'unload_all')):
+            widgets = []
+            for key in keys:
+                widget = button({'load': 'Load', 'unload': 'Unload',
+                                 'load_all': 'Load All', 'unload_all': 'Unload All'}[key],
+                                lambda checked=False, action=key: self.run_filament_macro(action))
+                widget.hide()
+                widget.setEnabled(False)
+                self.filament_buttons[key] = widget
+                widgets.append(widget)
+            c.addLayout(row(*widgets))
+        self.filament_status = label('', 'caption')
+        self.filament_status.hide()
+        c.addWidget(self.filament_status)
+        l.addWidget(f)
+
+        l = self.layout_block('tools_order', root, 'pressure_advance', 'Pressure Advance')
+        f, c = card('Pressure Advance')
         self.pa_spin = TouchSpinBox()
         self.pa_spin.setProperty('touch_title', 'Pressure Advance')
         self.pa_spin.setDecimals(4)
         self.pa_spin.setSingleStep(.005)
         self.pa_spin.setRange(0, 1)
         self.pa_apply_button = button('Übernehmen', self.apply_pa, True)
-        if self.tiny:
-            c.addWidget(label('Pressure Advance', 'caption'))
-            c.addLayout(row(self.pa_spin, self.pa_apply_button))
-        else:
-            c.addLayout(row(label('Pressure Advance', 'caption'), self.pa_spin, self.pa_apply_button))
+        c.addLayout(row(self.pa_spin, self.pa_apply_button))
         l.addWidget(f)
         l = self.layout_block('tools_order', root, 'retract', 'Firmware Retract')
         f, c = card('Firmware Retract')
@@ -4425,35 +4619,7 @@ class Screen(QWidget):
         c.addLayout(row(button('Übernehmen', self.apply_retract, True),
                         button('Reset', self.reset_retract)))
         l.addWidget(f)
-        l = self.layout_block('tools_order', root, 'extrusion', 'Extrusion')
-        f, c = card('Extrusion')
-        c.addWidget(label('Extrusion nur bei ausreichend heißem, aktivem Hotend und ohne laufenden Druck. Klipper prüft zusätzlich seine Grenzwerte.', 'caption'))
-        self.extrude_len = QComboBox()
-        self.extrude_len.addItems([f'{x:g}' for x in options('extrusion', 'lengths', '1, 5, 10, 50, 100')])
-        self.extrude_speed = QComboBox()
-        self.extrude_speed.addItems([f'{x:g}' for x in options('extrusion', 'speeds', '2, 5, 10, 20, 50')])
-        c.addLayout(row(label('Länge mm'), self.extrude_len, label('mm/s'), self.extrude_speed))
-        self.extrude_buttons = (button('Extrudieren', partial(self.extrude, 1), True),
-                                button('Zurückziehen', partial(self.extrude, -1)))
-        for widget in self.extrude_buttons:
-            widget.setEnabled(False)
-        c.addLayout(row(*self.extrude_buttons))
-        self.filament_buttons = {}
-        for keys in (('load', 'unload'), ('load_all', 'unload_all')):
-            widgets = []
-            for key in keys:
-                widget = button({'load': 'Load', 'unload': 'Unload',
-                                 'load_all': 'Load All', 'unload_all': 'Unload All'}[key],
-                                lambda checked=False, action=key: self.run_filament_macro(action))
-                widget.hide()
-                widget.setEnabled(False)
-                self.filament_buttons[key] = widget
-                widgets.append(widget)
-            c.addLayout(row(*widgets))
-        self.filament_status = label('', 'caption')
-        self.filament_status.hide()
-        c.addWidget(self.filament_status)
-        l.addWidget(f)
+        self.rebuild_presets()
 
     def make_temperatures(self, l):
         root = l
@@ -6496,7 +6662,7 @@ class Screen(QWidget):
                 self.tool_selector.addItem(name + ' · ' + obj, obj)
                 widget = button(name, lambda checked=False, target=obj: self.select_tool(target))
                 self.tool_buttons[obj] = widget
-                columns = 2 if self.tiny else 4
+                columns = 4 if self.content_width >= 500 else 2
                 tile = QWidget()
                 tile_layout = QVBoxLayout(tile)
                 tile_layout.setContentsMargins(0, 0, 0, 0)
@@ -6508,16 +6674,17 @@ class Screen(QWidget):
                 tile_layout.addWidget(sensor_label)
                 self.tool_filament_labels[obj] = sensor_label
                 self.tool_button_grid.addWidget(tile, i // columns, i % columns)
-                widget.setVisible(len(discovered) > 1)
+                widget.setVisible(True)
                 if obj == selected:
                     self.tool_selector.setCurrentIndex(i)
             self.tool_selector.blockSignals(False)
-            self.tool_selector.setVisible(len(discovered) <= 1)
+            self.tool_selector.hide()
         selected = self.tool_selector.currentData() or active
         info = st.get(selected, {})
         cfg = st.get('configfile', {}).get('settings', {}).get(selected, {})
         tool = next((name for name, obj in discovered.items() if obj == selected), selected or '—')
-        self.set_text('tool_info', f"Aktiver Extruder: {active or '—'}  ·  {tool}: {fmt(info.get('temperature'))} / {fmt(info.get('target'))} °C\nDüse: {cfg.get('nozzle_diameter','--')} mm  ·  PA: {fmt(info.get('pressure_advance'), 4)}")
+        active_tool = next((name for name, obj in discovered.items() if obj == active), active or '—')
+        self.set_text('tool_info', f"Active: {active_tool} · Selected: {tool} · {cfg.get('nozzle_diameter','--')} mm nozzle")
         self.update_filament_controls(st)
         incoming_pa = fval(info.get('pressure_advance'))
         if self.pa_spin.property('velox_dirty'):
@@ -6606,7 +6773,12 @@ class Screen(QWidget):
             sensor_label.setToolTip(sensor or tr('No sensor assigned'))
             sensor_label.setVisible(sensor_available)
         self.tool_selector.setEnabled(idle)
-        self.show_heater_target(self.selected_heating_status, status.get(selected, {}) if ready else {})
+        self.update_extruder_readouts(status if ready else {}, selected if ready else None)
+        self.refresh_extrusion_flow()
+        for i in range(self.extruder_preset_grid.count()):
+            widget = self.extruder_preset_grid.itemAt(i).widget()
+            if isinstance(widget, QPushButton):
+                widget.setEnabled(bool(idle and selected))
         self.pa_spin.setEnabled(ready and not self._toolhead_pending and bool(selected))
         self.pa_apply_button.setEnabled(ready and not self._toolhead_pending and bool(selected))
         self.extrude_len.setEnabled(idle)
@@ -6638,6 +6810,40 @@ class Screen(QWidget):
             text = self._toolhead_feedback
         self.filament_status.setText(text)
         self.filament_status.setVisible(bool(text))
+
+    def update_extruder_readouts(self, status, selected):
+        tool = next((name for name, obj in self._tool_mapping.items() if obj == selected), 'Hotend')
+        for widget, title, name in ((self.tool_temperature_button, tool, selected),
+                                    (self.extruder_bed_temp, 'Bed', 'heater_bed')):
+            entry = status.get(name, {})
+            widget.setText(f"{tr(title)} · {fmt(entry.get('temperature'), 0)} / {fmt(entry.get('target'), 0)} °C")
+            self.paint_heat_state(widget, heater_state(entry))
+
+    def refresh_extrusion_flow(self):
+        selected = self.tool_selector.currentData()
+        if self.live_print_state() is None or not selected:
+            self.extrude_flow_label.setText(tr('Requested flow') + ': — mm³/s')
+            return
+        cfg = self._live_status.get('configfile', {}).get('settings', {}).get(selected, {})
+        diameter = cfg.get('filament_diameter', 1.75)
+        flow = requested_extrusion_flow(self.extrude_speed.currentText(), diameter)
+        if flow is None:
+            self.extrude_flow_label.setText(tr('Requested flow') + ': — mm³/s')
+            return
+        self.extrude_flow_label.setText(tr('Requested flow') + f': {flow:.1f} mm³/s · Ø {float(diameter):g} mm' +
+                                         (tr(' (default)') if 'filament_diameter' not in cfg else ''))
+
+    def apply_extruder_preset(self, name, content):
+        if not self.filament_idle() or not self.tool_selector.currentData():
+            return
+        # Reuse the selected-tool preset resolver and existing confirmation logic.
+        targets = self.resolve_preset_targets(content, self._live_status)
+        commands = [f'SET_HEATER_TEMPERATURE HEATER={heater.split(" ",1)[-1] if heater.startswith("heater_generic ") else heater} TARGET={value:g}'
+                    for heater, value in targets.items()]
+        if commands:
+            self.confirm_script('\n'.join(commands), 'Temperatur-Preset '+name)
+        else:
+            inform(self, 'Preset', 'Keine passenden regelbaren Heizungen für dieses Preset gefunden.')
 
     def activate_selected_tool(self):
         tool, macro = self.selected_tool_macro()
@@ -6710,6 +6916,9 @@ class Screen(QWidget):
         minimum = fval(cfg.get('min_extrude_temp'), 170)
         if current < minimum:
             warn(self, 'Extrusion', f'Hotend nur {current:.1f} °C, nötig mindestens {minimum:.1f} °C.')
+            return
+        if st.get(extr, {}).get('can_extrude') is False:
+            warn(self, 'Extrusion', 'Klipper reports that the selected extruder cannot extrude.')
             return
         length = fval(self.extrude_len.currentText())
         speed = fval(self.extrude_speed.currentText())

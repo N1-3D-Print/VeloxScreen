@@ -1,12 +1,12 @@
 # Multi-tool & filament management (v0.4.11 alpha)
 
-## Tools page
+## Extruder page (formerly Tools)
 
 VeloxScreen discovers Klipper objects named `extruder`, `extruder1`, `extruder2`, etc. The default label is T0 for `extruder` and Tn for `extruderN`. This is a naming convention, not proof of a physical tool's identity. Extruder steppers without independent heaters are not counted as separate tools. Shared-nozzle and custom toolchanger systems may require a separate integration.
 
 By default tap a tile to select and request its configured tool-change macro. Turn off **Direct tool change on tap** in Settings → Confirmation dialogs to select without motion and use **Activate selected tool** instead. The blue tile is the active extruder from `toolhead.extruder`; a dot marks the selection. Programmatic selection changes never trigger motion. Verify the actual mapping on unusual toolchangers. Klipper status is logical state, not a dock/physical presence sensor.
 
-Each tile displays actual / target temperature. The selected heater status is red while heating, green at target, amber while cooling, neutral when off. **Set tool temperature** edits the selected heater, even if it is not active, subject to the configured maximum. Manual extrusion requires a hot active extruder. Load/Unload are enabled only for the selected, active extruder; heating, movement and park details belong to the printer macro.
+Each tile displays actual / target temperature. The selected heater status is red while heating, green at target, amber while cooling, neutral when off. Tapping the selected hotend temperature readout edits the selected heater, even if it is not active, subject to the configured maximum. The bed actual/target temperature and configured temperature presets are displayed on the same page. Presets target the selected nozzle and any configured bed/chamber heaters. Select a distance and speed using buttons; the requested flow is calculated, not measured. Manual extrusion requires a hot active extruder. Load/Unload are enabled only for the selected, active extruder; heating, movement and park details belong to the printer macro.
 
 ## Confirmation preferences
 
